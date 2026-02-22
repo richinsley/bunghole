@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bunghole</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0a0a;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#login h1 {
+  font-size: 24px;
+  font-weight: 400;
+  color: #888;
+}
+
+#login form {
+  display: flex;
+  gap: 8px;
+}
+
+#login input {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  padding: 8px 12px;
+  font-size: 14px;
+  border-radius: 4px;
+  width: 260px;
+  outline: none;
+}
+
+#login input:focus { border-color: #666; }
+
+#login button, #toolbar button {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  padding: 8px 16px;
+  font-size: 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#login button:hover, #toolbar button:hover { background: #3a3a3a; }
+
+#viewport {
+  display: none;
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+#video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  cursor: none;
+}
+
+#toolbar {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 20, 0.9);
+  border: 1px solid #333;
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  padding: 6px 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  z-index: 100;
+  transition: opacity 0.3s;
+  opacity: 0;
+}
+
+#viewport:hover #toolbar,
+#toolbar:hover { opacity: 1; }
+
+#status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+}
+
+#status.connected { background: #4a4; }
+#status.connecting { background: #aa4; }
+#status.error { background: #a44; }
+
+#error-msg {
+  color: #e44;
+  font-size: 13px;
+  max-width: 300px;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>bunghole</h1>
+  <form id="login-form">
+    <input type="password" id="token-input" placeholder="access token" autofocus>
+    <button type="submit">connect</button>
+  </form>
+  <div id="error-msg"></div>
+</div>
+
+<div id="viewport">
+  <video id="video" autoplay playsinline></video>
+  <div id="toolbar">
+    <div id="status"></div>
+    <span id="status-text">disconnected</span>
+    <button id="fullscreen-btn">fullscreen</button>
+    <button id="disconnect-btn">disconnect</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+let token = '';
+let pc = null;
+let sessionUrl = null;
+let inputDC = null;
+let clipboardDC = null;
+let pointerLocked = false;
+let videoEl, viewportEl;
+
+const loginEl = document.getElementById('login');
+const loginForm = document.getElementById('login-form');
+const tokenInput = document.getElementById('token-input');
+const errorMsg = document.getElementById('error-msg');
+const statusEl = document.getElementById('status');
+const statusText = document.getElementById('status-text');
+
+loginForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  token = tokenInput.value.trim();
+  if (!token) return;
+  errorMsg.textContent = '';
+  connect();
+});
+
+document.getElementById('fullscreen-btn').addEventListener('click', () => {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    document.getElementById('viewport').requestFullscreen();
+  }
+});
+
+document.getElementById('disconnect-btn').addEventListener('click', disconnect);
+
+function setStatus(state, text) {
+  statusEl.className = state;
+  statusText.textContent = text;
+}
+
+async function connect() {
+  setStatus('connecting', 'connecting...');
+
+  pc = new RTCPeerConnection({
+    iceServers: [],
+    iceTransportPolicy: 'all'
+  });
+
+  // Create data channels (client creates them)
+  inputDC = pc.createDataChannel('input', { ordered: true });
+  clipboardDC = pc.createDataChannel('clipboard', { ordered: true });
+
+  clipboardDC.onmessage = async (e) => {
+    try {
+      await navigator.clipboard.writeText(e.data);
+    } catch (err) {
+      // Clipboard write may fail if page not focused
+    }
+  };
+
+  // Set up video/audio
+  pc.ontrack = (e) => {
+    if (e.track.kind === 'video') {
+      videoEl = document.getElementById('video');
+      videoEl.srcObject = e.streams[0];
+    }
+    // Audio tracks are auto-attached to the stream
+  };
+
+  pc.onconnectionstatechange = () => {
+    switch (pc.connectionState) {
+      case 'connected':
+        setStatus('connected', 'connected');
+        loginEl.style.display = 'none';
+        viewportEl = document.getElementById('viewport');
+        viewportEl.style.display = 'block';
+        setupInputHandlers();
+        break;
+      case 'disconnected':
+      case 'failed':
+        setStatus('error', pc.connectionState);
+        break;
+      case 'closed':
+        setStatus('', 'disconnected');
+        break;
+    }
+  };
+
+  // Add transceiver for receiving video/audio
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.addTransceiver('audio', { direction: 'recvonly' });
+
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      const check = () => {
+        if (pc.iceGatheringState === 'complete') {
+          pc.removeEventListener('icegatheringstatechange', check);
+          resolve();
+        }
+      };
+      pc.addEventListener('icegatheringstatechange', check);
+    });
+
+    const resp = await fetch('/whep', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/sdp',
+        'Authorization': 'Bearer ' + token
+      },
+      body: pc.localDescription.sdp
+    });
+
+    if (resp.status === 401) {
+      errorMsg.textContent = 'invalid token';
+      setStatus('error', 'auth failed');
+      pc.close();
+      return;
+    }
+
+    if (!resp.ok) {
+      throw new Error('WHEP error: ' + resp.status);
+    }
+
+    sessionUrl = resp.headers.get('Location');
+    const answerSDP = await resp.text();
+
+    await pc.setRemoteDescription({
+      type: 'answer',
+      sdp: answerSDP
+    });
+
+  } catch (err) {
+    errorMsg.textContent = err.message;
+    setStatus('error', 'failed');
+    if (pc) pc.close();
+  }
+}
+
+function disconnect() {
+  if (sessionUrl) {
+    fetch(sessionUrl, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).catch(() => {});
+  }
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  sessionUrl = null;
+  inputDC = null;
+  clipboardDC = null;
+  pointerLocked = false;
+
+  document.getElementById('viewport').style.display = 'none';
+  loginEl.style.display = 'flex';
+  setStatus('', 'disconnected');
+
+  if (document.pointerLockElement) {
+    document.exitPointerLock();
+  }
+}
+
+function sendInput(msg) {
+  if (inputDC && inputDC.readyState === 'open') {
+    inputDC.send(JSON.stringify(msg));
+  }
+}
+
+function setupInputHandlers() {
+  videoEl = document.getElementById('video');
+
+  // Click to lock pointer
+  videoEl.addEventListener('click', () => {
+    if (!pointerLocked) {
+      videoEl.requestPointerLock();
+    }
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = document.pointerLockElement === videoEl;
+  });
+
+  // Mouse movement (when pointer locked, use movementX/Y; otherwise use position)
+  videoEl.addEventListener('mousemove', (e) => {
+    if (!pointerLocked) return;
+
+    // Get the video's display dimensions and actual content dimensions
+    const rect = videoEl.getBoundingClientRect();
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+
+    if (!vw || !vh) return;
+
+    // Calculate the scaling and offset for object-fit: contain
+    const scale = Math.min(rect.width / vw, rect.height / vh);
+    const displayW = vw * scale;
+    const displayH = vh * scale;
+    const offsetX = (rect.width - displayW) / 2;
+    const offsetY = (rect.height - displayH) / 2;
+
+    // Use movementX/Y for relative mouse mode
+    // Scale the movement to the video resolution
+    const scaleX = vw / displayW;
+    const scaleY = vh / displayH;
+
+    sendInput({
+      type: 'mousemove',
+      x: e.movementX * scaleX,
+      y: e.movementY * scaleY,
+      relative: true
+    });
+  });
+
+  // Mouse buttons
+  videoEl.addEventListener('mousedown', (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    sendInput({ type: 'mousedown', button: e.button });
+  });
+
+  videoEl.addEventListener('mouseup', (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    sendInput({ type: 'mouseup', button: e.button });
+  });
+
+  // Scroll
+  videoEl.addEventListener('wheel', (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    sendInput({ type: 'wheel', dx: e.deltaX, dy: e.deltaY });
+  }, { passive: false });
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    sendInput({ type: 'keydown', key: e.key, code: e.code });
+  });
+
+  document.addEventListener('keyup', (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    sendInput({ type: 'keyup', key: e.key, code: e.code });
+  });
+
+  // Prevent context menu when pointer locked
+  videoEl.addEventListener('contextmenu', (e) => {
+    if (pointerLocked) e.preventDefault();
+  });
+
+  // Clipboard: paste from browser to remote
+  document.addEventListener('paste', (e) => {
+    if (!pointerLocked) return;
+    const text = e.clipboardData.getData('text');
+    if (text && clipboardDC && clipboardDC.readyState === 'open') {
+      clipboardDC.send(text);
+    }
+  });
+}
+</script>
+</body>
+</html>
