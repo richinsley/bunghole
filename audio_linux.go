@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -23,11 +25,6 @@ type AudioCapture struct {
 	client  *pulse.Client
 	stream  *pulse.RecordStream
 	encoder *opus.Encoder
-}
-
-type OpusPacket struct {
-	Data     []byte
-	Duration time.Duration
 }
 
 // pcmCollector implements pulse.Writer — receives raw PCM from PulseAudio
@@ -68,7 +65,7 @@ func (p *pcmCollector) drain(count int) []int16 {
 	return out
 }
 
-func NewAudioCapture() (*AudioCapture, error) {
+func NewAudioCapture() (AudioCapturer, error) {
 	client, err := pulse.NewClient(
 		pulse.ClientApplicationName("bunghole"),
 	)

@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 /*
@@ -85,7 +87,6 @@ static void input_destroy() {
 */
 import "C"
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -94,7 +95,7 @@ import (
 
 type InputHandler struct{}
 
-func NewInputHandler(displayName string) (*InputHandler, error) {
+func NewInputHandler(displayName string) (EventInjector, error) {
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 
@@ -104,45 +105,27 @@ func NewInputHandler(displayName string) (*InputHandler, error) {
 	return &InputHandler{}, nil
 }
 
-type InputEvent struct {
-	Type     string  `json:"type"`
-	X        float64 `json:"x,omitempty"`
-	Y        float64 `json:"y,omitempty"`
-	DX       float64 `json:"dx,omitempty"`
-	DY       float64 `json:"dy,omitempty"`
-	Button   int     `json:"button,omitempty"`
-	Key      string  `json:"key,omitempty"`
-	Code     string  `json:"code,omitempty"`
-	Relative bool    `json:"relative,omitempty"`
-}
-
-func (ih *InputHandler) Handle(data []byte) {
-	var ev InputEvent
-	if err := json.Unmarshal(data, &ev); err != nil {
-		log.Printf("input: bad json: %v", err)
-		return
-	}
-
-	switch ev.Type {
+func (ih *InputHandler) Inject(event InputEvent) {
+	switch event.Type {
 	case "mousemove":
-		if ev.Relative {
-			C.input_mouse_move_rel(C.int(ev.X), C.int(ev.Y))
+		if event.Relative {
+			C.input_mouse_move_rel(C.int(event.X), C.int(event.Y))
 		} else {
-			C.input_mouse_move_abs(C.int(ev.X), C.int(ev.Y))
+			C.input_mouse_move_abs(C.int(event.X), C.int(event.Y))
 		}
 	case "mousedown":
-		C.input_mouse_button(C.int(jsButtonToX11(ev.Button)), C.int(1))
+		C.input_mouse_button(C.int(jsButtonToX11(event.Button)), C.int(1))
 	case "mouseup":
-		C.input_mouse_button(C.int(jsButtonToX11(ev.Button)), C.int(0))
+		C.input_mouse_button(C.int(jsButtonToX11(event.Button)), C.int(0))
 	case "wheel":
-		C.input_mouse_scroll(C.double(ev.DX), C.double(ev.DY))
+		C.input_mouse_scroll(C.double(event.DX), C.double(event.DY))
 	case "keydown":
-		keysym := codeToKeysym(ev.Code, ev.Key)
+		keysym := codeToKeysym(event.Code, event.Key)
 		if keysym != 0 {
 			C.input_key(C.uint(keysym), C.int(1))
 		}
 	case "keyup":
-		keysym := codeToKeysym(ev.Code, ev.Key)
+		keysym := codeToKeysym(event.Code, event.Key)
 		if keysym != 0 {
 			C.input_key(C.uint(keysym), C.int(0))
 		}

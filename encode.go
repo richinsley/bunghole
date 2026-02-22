@@ -30,6 +30,15 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 	const AVCodec *codec = NULL;
 	int is_hevc = (strcmp(codec_name, "h265") == 0);
 
+#ifdef __APPLE__
+	if (is_hevc) {
+		codec = avcodec_find_encoder_by_name("hevc_videotoolbox");
+		if (!codec) codec = avcodec_find_encoder_by_name("libx265");
+	} else {
+		codec = avcodec_find_encoder_by_name("h264_videotoolbox");
+		if (!codec) codec = avcodec_find_encoder_by_name("libx264");
+	}
+#else
 	if (is_hevc) {
 		codec = avcodec_find_encoder_by_name("hevc_nvenc");
 		if (!codec) codec = avcodec_find_encoder_by_name("libx265");
@@ -37,6 +46,7 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 		codec = avcodec_find_encoder_by_name("h264_nvenc");
 		if (!codec) codec = avcodec_find_encoder_by_name("libx264");
 	}
+#endif
 	if (!codec) return NULL;
 
 	e->ctx = avcodec_alloc_context3(codec);
@@ -65,6 +75,16 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 		av_opt_set(e->ctx->priv_data, "rc", "cbr", 0);
 		av_opt_set(e->ctx->priv_data, "zerolatency", "1", 0);
 		av_opt_set_int(e->ctx->priv_data, "gpu", gpu_index, 0);
+	} else if (strcmp(codec->name, "h264_videotoolbox") == 0) {
+		av_opt_set(e->ctx->priv_data, "realtime", "1", 0);
+		av_opt_set(e->ctx->priv_data, "allow_sw", "1", 0);
+		av_opt_set(e->ctx->priv_data, "profile", "baseline", 0);
+		e->ctx->pix_fmt = AV_PIX_FMT_NV12;
+	} else if (strcmp(codec->name, "hevc_videotoolbox") == 0) {
+		av_opt_set(e->ctx->priv_data, "realtime", "1", 0);
+		av_opt_set(e->ctx->priv_data, "allow_sw", "1", 0);
+		av_opt_set(e->ctx->priv_data, "profile", "main", 0);
+		e->ctx->pix_fmt = AV_PIX_FMT_NV12;
 	} else if (strcmp(codec->name, "libx265") == 0) {
 		av_opt_set(e->ctx->priv_data, "preset", "ultrafast", 0);
 		av_opt_set(e->ctx->priv_data, "tune", "zerolatency", 0);
@@ -167,7 +187,7 @@ type Encoder struct {
 	e *C.Encoder
 }
 
-func NewEncoder(width, height, fps, bitrateKbps, gpu int, codec string, gop int) (*Encoder, error) {
+func NewEncoder(width, height, fps, bitrateKbps, gpu int, codec string, gop int) (VideoEncoder, error) {
 	keyint := gop
 	if keyint <= 0 {
 		keyint = fps * 2 // default: keyframe every 2 seconds
@@ -177,18 +197,13 @@ func NewEncoder(width, height, fps, bitrateKbps, gpu int, codec string, gop int)
 	e := C.encoder_init(C.int(width), C.int(height), C.int(fps), C.int(bitrateKbps), C.int(keyint), C.int(gpu), cCodec)
 	if e == nil {
 		if codec == "h265" {
-			return nil, fmt.Errorf("failed to initialize video encoder (tried hevc_nvenc then libx265)")
+			return nil, fmt.Errorf("failed to initialize video encoder (tried hardware h265 then libx265)")
 		}
-		return nil, fmt.Errorf("failed to initialize video encoder (tried h264_nvenc then libx264)")
+		return nil, fmt.Errorf("failed to initialize video encoder (tried hardware h264 then libx264)")
 	}
 	name := C.GoString(C.encoder_name(e))
 	fmt.Printf("video encoder: %s (%dx%d @ %d kbps)\n", name, width, height, bitrateKbps)
 	return &Encoder{e: e}, nil
-}
-
-type EncodedFrame struct {
-	Data  []byte
-	IsKey bool
 }
 
 func (enc *Encoder) Encode(frame *Frame) (*EncodedFrame, error) {

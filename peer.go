@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -15,8 +16,8 @@ type Session struct {
 	PC             *webrtc.PeerConnection
 	VideoTrack     *webrtc.TrackLocalStaticSample
 	AudioTrack     *webrtc.TrackLocalStaticSample
-	InputHandler   *InputHandler
-	ClipboardHandler *ClipboardHandler
+	InputHandler     EventInjector
+	ClipboardHandler ClipboardSync
 	stop           chan struct{}
 	closed         bool
 	mu             sync.Mutex
@@ -119,11 +120,15 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 	}
 
 	// Set up input handler
-	ih, err := NewInputHandler(displayName)
-	if err != nil {
-		log.Printf("warning: input handler init failed: %v", err)
+	if displayName == "vm" && globalVM != nil {
+		sess.InputHandler = NewVMInputHandler(globalVM.View())
 	} else {
-		sess.InputHandler = ih
+		ih, err := NewInputHandler(displayName)
+		if err != nil {
+			log.Printf("warning: input handler init failed: %v", err)
+		} else {
+			sess.InputHandler = ih
+		}
 	}
 
 	// Data channels are created by the client; we handle them via OnDataChannel
@@ -132,10 +137,18 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 		case "input":
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if sess.InputHandler != nil {
-					sess.InputHandler.Handle(msg.Data)
+					var event InputEvent
+					if err := json.Unmarshal(msg.Data, &event); err != nil {
+						return
+					}
+					sess.InputHandler.Inject(event)
 				}
 			})
 		case "clipboard":
+			// Clipboard sync deferred for VM mode (needs vsock guest agent)
+			if displayName == "vm" {
+				break
+			}
 			// Set up clipboard handler when the channel opens
 			dc.OnOpen(func() {
 				ch, err := NewClipboardHandler(displayName, func(text string) {

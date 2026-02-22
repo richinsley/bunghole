@@ -71,7 +71,20 @@ body {
   height: 100%;
   object-fit: contain;
   background: #000;
-  cursor: none;
+}
+
+#video.active { cursor: none; }
+#cursor-dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid rgba(0,0,0,0.5);
+  pointer-events: none;
+  z-index: 50;
+  display: none;
+  transform: translate(-50%, -50%);
 }
 
 #toolbar {
@@ -118,6 +131,7 @@ body {
 <body>
 
 <div id="login">
+  <img src="/web/bunghole.png" alt="bunghole" style="width: 120px; height: auto;">
   <h1>bunghole</h1>
   <form id="login-form">
     <input type="password" id="token-input" placeholder="access token" autofocus>
@@ -128,6 +142,7 @@ body {
 
 <div id="viewport">
   <video id="video" autoplay playsinline></video>
+  <div id="cursor-dot"></div>
   <div id="toolbar">
     <div id="status"></div>
     <span id="status-text">disconnected</span>
@@ -144,8 +159,9 @@ let pc = null;
 let sessionUrl = null;
 let inputDC = null;
 let clipboardDC = null;
-let pointerLocked = false;
-let videoEl, viewportEl;
+let inputFocused = false;
+let videoEl, viewportEl, cursorDot;
+let serverMode = 'desktop'; // 'desktop' or 'vm'
 
 const loginEl = document.getElementById('login');
 const loginForm = document.getElementById('login-form');
@@ -179,6 +195,13 @@ function setStatus(state, text) {
 
 async function connect() {
   setStatus('connecting', 'connecting...');
+
+  // Fetch server mode to adapt cursor behavior
+  try {
+    const modeResp = await fetch('/mode');
+    const modeData = await modeResp.json();
+    serverMode = modeData.mode || 'desktop';
+  } catch (e) { serverMode = 'desktop'; }
 
   pc = new RTCPeerConnection({
     iceServers: [],
@@ -294,15 +317,11 @@ function disconnect() {
   sessionUrl = null;
   inputDC = null;
   clipboardDC = null;
-  pointerLocked = false;
+  inputFocused = false;
 
   document.getElementById('viewport').style.display = 'none';
   loginEl.style.display = 'flex';
   setStatus('', 'disconnected');
-
-  if (document.pointerLockElement) {
-    document.exitPointerLock();
-  }
 }
 
 function sendInput(msg) {
@@ -311,92 +330,119 @@ function sendInput(msg) {
   }
 }
 
+// Map browser mouse position to remote desktop coordinates
+function videoCoords(e) {
+  const rect = videoEl.getBoundingClientRect();
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  if (!vw || !vh) return null;
+
+  const scale = Math.min(rect.width / vw, rect.height / vh);
+  const displayW = vw * scale;
+  const displayH = vh * scale;
+  const offsetX = (rect.width - displayW) / 2;
+  const offsetY = (rect.height - displayH) / 2;
+
+  const x = (e.clientX - rect.left - offsetX) / scale;
+  const y = (e.clientY - rect.top - offsetY) / scale;
+
+  // Clamp to video bounds
+  if (x < 0 || y < 0 || x > vw || y > vh) return null;
+  return { x: Math.round(x), y: Math.round(y) };
+}
+
 function setupInputHandlers() {
   videoEl = document.getElementById('video');
+  cursorDot = document.getElementById('cursor-dot');
 
-  // Click to lock pointer
-  videoEl.addEventListener('click', () => {
-    if (!pointerLocked) {
-      videoEl.requestPointerLock();
+  const isVM = serverMode === 'vm';
+
+  // Click video to focus input; click outside to blur
+  videoEl.addEventListener('mousedown', (e) => {
+    if (!inputFocused) {
+      inputFocused = true;
+      videoEl.classList.add('active');
+      if (isVM) cursorDot.style.display = 'block';
+    }
+    e.preventDefault();
+    if (isVM) {
+      cursorDot.style.left = e.clientX + 'px';
+      cursorDot.style.top = e.clientY + 'px';
+    }
+    const c = videoCoords(e);
+    if (c) sendInput({ type: 'mousedown', button: e.button, x: c.x, y: c.y });
+  });
+
+  document.addEventListener('mousedown', (e) => {
+    if (inputFocused && e.target !== videoEl && !videoEl.contains(e.target)) {
+      inputFocused = false;
+      videoEl.classList.remove('active');
+      if (isVM) cursorDot.style.display = 'none';
     }
   });
 
-  document.addEventListener('pointerlockchange', () => {
-    pointerLocked = document.pointerLockElement === videoEl;
-  });
-
-  // Mouse movement (when pointer locked, use movementX/Y; otherwise use position)
-  videoEl.addEventListener('mousemove', (e) => {
-    if (!pointerLocked) return;
-
-    // Get the video's display dimensions and actual content dimensions
-    const rect = videoEl.getBoundingClientRect();
-    const vw = videoEl.videoWidth;
-    const vh = videoEl.videoHeight;
-
-    if (!vw || !vh) return;
-
-    // Calculate the scaling and offset for object-fit: contain
-    const scale = Math.min(rect.width / vw, rect.height / vh);
-    const displayW = vw * scale;
-    const displayH = vh * scale;
-    const offsetX = (rect.width - displayW) / 2;
-    const offsetY = (rect.height - displayH) / 2;
-
-    // Use movementX/Y for relative mouse mode
-    // Scale the movement to the video resolution
-    const scaleX = vw / displayW;
-    const scaleY = vh / displayH;
-
-    sendInput({
-      type: 'mousemove',
-      x: e.movementX * scaleX,
-      y: e.movementY * scaleY,
-      relative: true
-    });
-  });
-
-  // Mouse buttons
-  videoEl.addEventListener('mousedown', (e) => {
-    if (!pointerLocked) return;
-    e.preventDefault();
-    sendInput({ type: 'mousedown', button: e.button });
-  });
-
   videoEl.addEventListener('mouseup', (e) => {
-    if (!pointerLocked) return;
+    if (!inputFocused) return;
     e.preventDefault();
-    sendInput({ type: 'mouseup', button: e.button });
+    const c = videoCoords(e);
+    if (c) sendInput({ type: 'mouseup', button: e.button, x: c.x, y: c.y });
+  });
+
+  videoEl.addEventListener('mousemove', (e) => {
+    if (!inputFocused) return;
+    if (isVM) {
+      cursorDot.style.left = e.clientX + 'px';
+      cursorDot.style.top = e.clientY + 'px';
+    }
+    const c = videoCoords(e);
+    if (c) sendInput({ type: 'mousemove', x: c.x, y: c.y });
+  });
+
+  videoEl.addEventListener('mouseleave', () => {
+    if (isVM) cursorDot.style.display = 'none';
+  });
+
+  videoEl.addEventListener('mouseenter', () => {
+    if (isVM && inputFocused) cursorDot.style.display = 'block';
   });
 
   // Scroll
   videoEl.addEventListener('wheel', (e) => {
-    if (!pointerLocked) return;
+    if (!inputFocused) return;
     e.preventDefault();
-    sendInput({ type: 'wheel', dx: e.deltaX, dy: e.deltaY });
+    const c = videoCoords(e);
+    sendInput({ type: 'wheel', dx: e.deltaX, dy: e.deltaY,
+                x: c ? c.x : 0, y: c ? c.y : 0 });
   }, { passive: false });
 
-  // Keyboard
+  // Keyboard (captured when video is focused)
   document.addEventListener('keydown', (e) => {
-    if (!pointerLocked) return;
+    if (!inputFocused) return;
+    // Allow Escape to release focus
+    if (e.code === 'Escape') {
+      inputFocused = false;
+      videoEl.classList.remove('active');
+      if (isVM) cursorDot.style.display = 'none';
+      return;
+    }
     e.preventDefault();
     sendInput({ type: 'keydown', key: e.key, code: e.code });
   });
 
   document.addEventListener('keyup', (e) => {
-    if (!pointerLocked) return;
+    if (!inputFocused) return;
     e.preventDefault();
     sendInput({ type: 'keyup', key: e.key, code: e.code });
   });
 
-  // Prevent context menu when pointer locked
+  // Prevent context menu
   videoEl.addEventListener('contextmenu', (e) => {
-    if (pointerLocked) e.preventDefault();
+    if (inputFocused) e.preventDefault();
   });
 
   // Clipboard: paste from browser to remote
   document.addEventListener('paste', (e) => {
-    if (!pointerLocked) return;
+    if (!inputFocused) return;
     const text = e.clipboardData.getData('text');
     if (text && clipboardDC && clipboardDC.readyState === 'open') {
       clipboardDC.send(text);

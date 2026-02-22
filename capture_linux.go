@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 /*
@@ -134,20 +136,12 @@ import (
 	"unsafe"
 )
 
-type Frame struct {
-	Data   []byte         // populated only for non-zero-copy path
-	Ptr    unsafe.Pointer // raw C pointer to BGRA pixel data (zero-copy)
-	Width  int
-	Height int
-	Stride int
-}
-
 type Capturer struct {
 	c   *C.Capturer
 	fps int
 }
 
-func NewCapturer(displayName string, fps int) (*Capturer, error) {
+func NewCapturer(displayName string, fps int) (MediaCapturer, error) {
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 

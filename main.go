@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,20 +19,18 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-//go:embed web/index.html
+//go:embed web/*
 var webContent embed.FS
 
 var (
-	flagDisplay    = flag.String("display", "", "X11 display to capture (auto-detected or started if empty)")
-	flagAddr       = flag.String("addr", ":8080", "HTTP listen address")
-	flagToken      = flag.String("token", "", "Bearer token for authentication (required)")
-	flagFPS        = flag.Int("fps", 30, "Capture frame rate")
-	flagBitrate    = flag.Int("bitrate", 4000, "Video bitrate in kbps")
-	flagStartX     = flag.Bool("start-x", false, "Start a new Xorg server with nvidia driver")
-	flagResolution = flag.String("resolution", "1920x1080", "Screen resolution when starting X server")
-	flagGPU        = flag.Int("gpu", 0, "GPU index for Xorg (0=first, 1=second)")
-	flagCodec      = flag.String("codec", "h264", "Video codec (h264 or h265)")
-	flagGOP        = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
+	flagDisplay = flag.String("display", "", "X11 display to capture (auto-detected or started if empty)")
+	flagAddr    = flag.String("addr", ":8080", "HTTP listen address")
+	flagToken   = flag.String("token", "", "Bearer token for authentication (required)")
+	flagFPS     = flag.Int("fps", 30, "Capture frame rate")
+	flagBitrate = flag.Int("bitrate", 4000, "Video bitrate in kbps")
+	flagGPU     = flag.Int("gpu", 0, "GPU index for Xorg (0=first, 1=second)")
+	flagCodec   = flag.String("codec", "h264", "Video codec (h264 or h265)")
+	flagGOP     = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
 )
 
 type Server struct {
@@ -45,48 +44,44 @@ type Server struct {
 
 	mu       sync.Mutex
 	session  *Session
-	capturer *Capturer
-	encoder  *Encoder
-	audio    *AudioCapture
+	capturer MediaCapturer
+	encoder  VideoEncoder
+	audio    AudioCapturer
 }
 
 func main() {
 	flag.Parse()
 
+	// Subcommand: bunghole setup
+	if flag.NArg() > 0 && flag.Arg(0) == "setup" {
+		runtime.LockOSThread()
+		go func() {
+			runSetup()
+			vmNSAppStop()
+		}()
+		vmNSAppRun()
+		return
+	}
+
+	if isVMMode() {
+		runtime.LockOSThread()
+		go runServer()
+		vmNSAppRun()
+	} else {
+		runServer()
+	}
+}
+
+func runServer() {
 	if *flagToken == "" {
 		log.Fatal("--token is required")
 	}
 
 	display := *flagDisplay
-	var xserver *XServer
 
-	if *flagStartX || display == "" {
-		// Try to auto-detect an existing display, or start one
-		if display == "" {
-			display = os.Getenv("DISPLAY")
-		}
-
-		if display == "" || *flagStartX {
-			var err error
-			xserver, err = StartXServer(*flagResolution, *flagGPU)
-			if err != nil {
-				log.Fatalf("failed to start X server: %v", err)
-			}
-			display = xserver.Display
-			os.Setenv("DISPLAY", display)
-			os.Setenv("XAUTHORITY", xserver.Xauthority)
-
-			if err := xserver.StartDesktopSession(*flagResolution); err != nil {
-				log.Printf("warning: failed to start desktop session: %v", err)
-				log.Printf("X server is running on %s but no desktop — you may want to start one manually", display)
-			}
-
-			// Point audio capture at the PipeWire instance inside the desktop session
-			if xserver.PulseServer != "" {
-				os.Setenv("PULSE_SERVER", xserver.PulseServer)
-				log.Printf("audio: using %s", xserver.PulseServer)
-			}
-		}
+	cleanup, err := platformInit(&display, *flagGPU)
+	if err != nil {
+		log.Fatal(err)
 	}
 
 	if display == "" {
@@ -110,6 +105,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", srv.handleIndex)
+	mux.HandleFunc("GET /mode", srv.handleMode)
 	mux.HandleFunc("POST /whep", srv.handleWHEPOffer)
 	mux.HandleFunc("PATCH /whep/{id}", srv.handleWHEPPatch)
 	mux.HandleFunc("DELETE /whep/{id}", srv.handleWHEPDelete)
@@ -125,8 +121,9 @@ func main() {
 		srv.mu.Lock()
 		srv.teardownLocked()
 		srv.mu.Unlock()
-		if xserver != nil {
-			xserver.Stop()
+		cleanup()
+		if isVMMode() {
+			vmNSAppStop()
 		}
 		os.Exit(0)
 	}()
@@ -140,17 +137,27 @@ func main() {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	if r.URL.Path == "/" {
+		data, err := webContent.ReadFile("web/index.html")
+		if err != nil {
+			http.Error(w, "internal error", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
 		return
 	}
-	data, err := webContent.ReadFile("web/index.html")
-	if err != nil {
-		http.Error(w, "internal error", 500)
-		return
+	// Serve embedded static files (logo, etc.)
+	http.FileServer(http.FS(webContent)).ServeHTTP(w, r)
+}
+
+func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	mode := "desktop"
+	if s.display == "vm" {
+		mode = "vm"
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	fmt.Fprintf(w, `{"mode":%q}`, mode)
 }
 
 func (s *Server) handleWHEPOptions(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +317,14 @@ func (s *Server) checkAuth(r *http.Request) bool {
 }
 
 func (s *Server) startPipeline(sess *Session) {
-	cap, err := NewCapturer(s.display, s.fps)
+	var cap MediaCapturer
+	var err error
+
+	if s.display == "vm" && globalVM != nil {
+		cap, err = NewVMCapturer(globalVM.Window(), s.fps, globalVM.width, globalVM.height)
+	} else {
+		cap, err = NewCapturer(s.display, s.fps)
+	}
 	if err != nil {
 		log.Printf("capturer init error: %v", err)
 		return
@@ -329,8 +343,7 @@ func (s *Server) startPipeline(sess *Session) {
 	s.mu.Unlock()
 
 	// Start audio capture (non-fatal if it fails)
-	var audio *AudioCapture
-	audio, err = NewAudioCapture()
+	audio, err := NewAudioCapture()
 	if err != nil {
 		log.Printf("audio capture init failed (continuing without audio): %v", err)
 	} else {

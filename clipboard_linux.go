@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 /*
@@ -164,7 +166,7 @@ type ClipboardHandler struct {
 	sendFn      func(string) // callback to send clipboard to client
 }
 
-func NewClipboardHandler(displayName string, sendFn func(string)) (*ClipboardHandler, error) {
+func NewClipboardHandler(displayName string, sendFn func(string)) (ClipboardSync, error) {
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 
