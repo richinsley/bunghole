@@ -512,17 +512,14 @@ int vm_create_bundle(const char *ipsw_path, const char *bundle_path, uint64_t di
                 if (error) {
                     NSLog(@"vm_create_bundle: fetch restore image error: %@", error);
                 }
-                // Now load from local file
                 dispatch_semaphore_signal(sem);
             }];
         dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 
-        // Load from local IPSW file using NSData approach
         NSURL *ipswURL = [NSURL fileURLWithPath:ipswPath];
         sem = dispatch_semaphore_create(0);
         [VZMacOSRestoreImage fetchLatestSupportedWithCompletionHandler:
             ^(VZMacOSRestoreImage *image, NSError *error) {
-                // We just need a supported hardware model - get it from latest
                 if (!error) restoreImage = image;
                 dispatch_semaphore_signal(sem);
             }];
@@ -554,7 +551,7 @@ int vm_create_bundle(const char *ipsw_path, const char *bundle_path, uint64_t di
             return -1;
         }
 
-        // Create sparse disk image (minimum 64GB)
+        // Create sparse disk image
         uint64_t diskSize = disk_gb * 1024ULL * 1024ULL * 1024ULL;
         uint64_t minDisk = 64ULL * 1024ULL * 1024ULL * 1024ULL;
         if (diskSize < minDisk) diskSize = minDisk;

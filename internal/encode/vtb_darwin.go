@@ -1,4 +1,6 @@
-package main
+//go:build darwin
+
+package encode
 
 /*
 #cgo pkg-config: libavcodec libavutil libswscale
@@ -17,10 +19,10 @@ typedef struct {
 	int width;
 	int height;
 	int64_t pts;
-} Encoder;
+} VTBEncoder;
 
-static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, int keyint, int gpu_index, const char *codec_name) {
-	Encoder *e = (Encoder*)calloc(1, sizeof(Encoder));
+static VTBEncoder* vtb_encoder_init(int width, int height, int fps, int bitrate_kbps, int keyint, int gpu_index, const char *codec_name) {
+	VTBEncoder *e = (VTBEncoder*)calloc(1, sizeof(VTBEncoder));
 	if (!e) return NULL;
 
 	e->width = width;
@@ -30,7 +32,6 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 	const AVCodec *codec = NULL;
 	int is_hevc = (strcmp(codec_name, "h265") == 0);
 
-#ifdef __APPLE__
 	if (is_hevc) {
 		codec = avcodec_find_encoder_by_name("hevc_videotoolbox");
 		if (!codec) codec = avcodec_find_encoder_by_name("libx265");
@@ -38,15 +39,6 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 		codec = avcodec_find_encoder_by_name("h264_videotoolbox");
 		if (!codec) codec = avcodec_find_encoder_by_name("libx264");
 	}
-#else
-	if (is_hevc) {
-		codec = avcodec_find_encoder_by_name("hevc_nvenc");
-		if (!codec) codec = avcodec_find_encoder_by_name("libx265");
-	} else {
-		codec = avcodec_find_encoder_by_name("h264_nvenc");
-		if (!codec) codec = avcodec_find_encoder_by_name("libx264");
-	}
-#endif
 	if (!codec) return NULL;
 
 	e->ctx = avcodec_alloc_context3(codec);
@@ -61,21 +53,7 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 	e->ctx->gop_size = keyint;
 	e->ctx->max_b_frames = 0;
 
-	if (strcmp(codec->name, "h264_nvenc") == 0) {
-		av_opt_set(e->ctx->priv_data, "preset", "p1", 0);
-		av_opt_set(e->ctx->priv_data, "tune", "ull", 0);
-		av_opt_set(e->ctx->priv_data, "profile", "baseline", 0);
-		av_opt_set(e->ctx->priv_data, "rc", "cbr", 0);
-		av_opt_set(e->ctx->priv_data, "zerolatency", "1", 0);
-		av_opt_set_int(e->ctx->priv_data, "gpu", gpu_index, 0);
-	} else if (strcmp(codec->name, "hevc_nvenc") == 0) {
-		av_opt_set(e->ctx->priv_data, "preset", "p1", 0);
-		av_opt_set(e->ctx->priv_data, "tune", "ull", 0);
-		av_opt_set(e->ctx->priv_data, "profile", "main", 0);
-		av_opt_set(e->ctx->priv_data, "rc", "cbr", 0);
-		av_opt_set(e->ctx->priv_data, "zerolatency", "1", 0);
-		av_opt_set_int(e->ctx->priv_data, "gpu", gpu_index, 0);
-	} else if (strcmp(codec->name, "h264_videotoolbox") == 0) {
+	if (strcmp(codec->name, "h264_videotoolbox") == 0) {
 		av_opt_set(e->ctx->priv_data, "realtime", "1", 0);
 		av_opt_set(e->ctx->priv_data, "allow_sw", "1", 0);
 		av_opt_set(e->ctx->priv_data, "profile", "baseline", 0);
@@ -131,7 +109,7 @@ static Encoder* encoder_init(int width, int height, int fps, int bitrate_kbps, i
 }
 
 // Returns: 0 = success, -1 = error. out_size=0 means no output yet.
-static int encoder_encode(Encoder *e, const uint8_t *bgra, int stride,
+static int vtb_encoder_encode(VTBEncoder *e, const uint8_t *bgra, int stride,
                           uint8_t **out_buf, int *out_size, int *is_key) {
 	*out_size = 0;
 
@@ -160,15 +138,15 @@ static int encoder_encode(Encoder *e, const uint8_t *bgra, int stride,
 	return 0;
 }
 
-static void encoder_unref_packet(Encoder *e) {
+static void vtb_encoder_unref_packet(VTBEncoder *e) {
 	av_packet_unref(e->pkt);
 }
 
-static const char* encoder_name(Encoder *e) {
+static const char* vtb_encoder_name(VTBEncoder *e) {
 	return e->ctx->codec->name;
 }
 
-static void encoder_destroy(Encoder *e) {
+static void vtb_encoder_destroy(VTBEncoder *e) {
 	if (!e) return;
 	if (e->sws) sws_freeContext(e->sws);
 	if (e->pkt) av_packet_free(&e->pkt);
@@ -181,32 +159,34 @@ import "C"
 import (
 	"fmt"
 	"unsafe"
+
+	"bunghole/internal/types"
 )
 
-type Encoder struct {
-	e *C.Encoder
+type vtbEncoder struct {
+	e *C.VTBEncoder
 }
 
-func NewEncoder(width, height, fps, bitrateKbps, gpu int, codec string, gop int) (VideoEncoder, error) {
+func NewEncoder(width, height, fps, bitrateKbps, gpu int, codec string, gop int, cudaCtx, cuMemcpy2D unsafe.Pointer) (types.VideoEncoder, error) {
 	keyint := gop
 	if keyint <= 0 {
 		keyint = fps * 2 // default: keyframe every 2 seconds
 	}
 	cCodec := C.CString(codec)
 	defer C.free(unsafe.Pointer(cCodec))
-	e := C.encoder_init(C.int(width), C.int(height), C.int(fps), C.int(bitrateKbps), C.int(keyint), C.int(gpu), cCodec)
+	e := C.vtb_encoder_init(C.int(width), C.int(height), C.int(fps), C.int(bitrateKbps), C.int(keyint), C.int(gpu), cCodec)
 	if e == nil {
 		if codec == "h265" {
 			return nil, fmt.Errorf("failed to initialize video encoder (tried hardware h265 then libx265)")
 		}
 		return nil, fmt.Errorf("failed to initialize video encoder (tried hardware h264 then libx264)")
 	}
-	name := C.GoString(C.encoder_name(e))
+	name := C.GoString(C.vtb_encoder_name(e))
 	fmt.Printf("video encoder: %s (%dx%d @ %d kbps)\n", name, width, height, bitrateKbps)
-	return &Encoder{e: e}, nil
+	return &vtbEncoder{e: e}, nil
 }
 
-func (enc *Encoder) Encode(frame *Frame) (*EncodedFrame, error) {
+func (enc *vtbEncoder) Encode(frame *types.Frame) (*types.EncodedFrame, error) {
 	var outBuf *C.uint8_t
 	var outSize C.int
 	var isKey C.int
@@ -219,7 +199,7 @@ func (enc *Encoder) Encode(frame *Frame) (*EncodedFrame, error) {
 		srcPtr = unsafe.Pointer(&frame.Data[0])
 	}
 
-	ret := C.encoder_encode(enc.e,
+	ret := C.vtb_encoder_encode(enc.e,
 		(*C.uint8_t)(srcPtr),
 		C.int(frame.Stride),
 		&outBuf, &outSize, &isKey)
@@ -232,14 +212,14 @@ func (enc *Encoder) Encode(frame *Frame) (*EncodedFrame, error) {
 	}
 
 	data := C.GoBytes(unsafe.Pointer(outBuf), outSize)
-	C.encoder_unref_packet(enc.e)
+	C.vtb_encoder_unref_packet(enc.e)
 
-	return &EncodedFrame{
+	return &types.EncodedFrame{
 		Data:  data,
 		IsKey: isKey != 0,
 	}, nil
 }
 
-func (enc *Encoder) Close() {
-	C.encoder_destroy(enc.e)
+func (enc *vtbEncoder) Close() {
+	C.vtb_encoder_destroy(enc.e)
 }

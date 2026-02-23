@@ -1,6 +1,7 @@
-package main
+package types
 
 import (
+	"image"
 	"time"
 	"unsafe"
 )
@@ -12,7 +13,14 @@ type Frame struct {
 	Width  int
 	Height int
 	Stride int
+	IsCUDA bool // true = Ptr is a CUDA device pointer (NV12 format)
+	PixFmt int  // 0 = BGRA (default), 1 = NV12
 }
+
+const (
+	PixFmtBGRA = 0
+	PixFmtNV12 = 1
+)
 
 type EncodedFrame struct {
 	Data  []byte
@@ -41,6 +49,20 @@ type MediaCapturer interface {
 	Height() int
 	Grab() (*Frame, error)
 	Close()
+}
+
+// CUDAProvider is optionally implemented by a MediaCapturer that captures
+// directly to CUDA device memory (e.g. NvFBC). The encoder uses this to
+// set up a CUDA hw_frames_ctx for zero-copy NVENC encoding.
+type CUDAProvider interface {
+	CUDAContext() unsafe.Pointer
+	CuMemcpy2D() unsafe.Pointer
+}
+
+// DebugGrabber is optionally implemented by a MediaCapturer to provide
+// a debug image for the /debug/frame endpoint.
+type DebugGrabber interface {
+	GrabImage() (image.Image, error)
 }
 
 type VideoEncoder interface {

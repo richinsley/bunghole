@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package vm
 
 /*
 #cgo LDFLAGS: -framework Cocoa -framework Virtualization
@@ -14,6 +14,9 @@ import "C"
 import (
 	"log"
 	"unsafe"
+
+	"bunghole/internal/input"
+	"bunghole/internal/types"
 )
 
 type VMInputHandler struct {
@@ -21,11 +24,11 @@ type VMInputHandler struct {
 	lastX, lastY float64
 }
 
-func NewVMInputHandler(view unsafe.Pointer) EventInjector {
+func NewVMInputHandler(view unsafe.Pointer) types.EventInjector {
 	return &VMInputHandler{view: view}
 }
 
-func (h *VMInputHandler) Inject(event InputEvent) {
+func (h *VMInputHandler) Inject(event types.InputEvent) {
 	switch event.Type {
 	case "mousemove":
 		h.lastX = event.X
@@ -45,13 +48,13 @@ func (h *VMInputHandler) Inject(event InputEvent) {
 		C.vm_input_scroll(h.view, C.double(event.DX), C.double(event.DY),
 			C.double(h.lastX), C.double(h.lastY))
 	case "keydown":
-		if kc, ok := codeMap[event.Code]; ok {
+		if kc, ok := input.CodeMap[event.Code]; ok {
 			C.vm_input_key(h.view, C.int(kc), C.int(1))
 		} else {
 			log.Printf("vm input: unmapped key code=%s key=%s", event.Code, event.Key)
 		}
 	case "keyup":
-		if kc, ok := codeMap[event.Code]; ok {
+		if kc, ok := input.CodeMap[event.Code]; ok {
 			C.vm_input_key(h.view, C.int(kc), C.int(0))
 		}
 	}

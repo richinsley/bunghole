@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package clipboard
 
 /*
 #cgo LDFLAGS: -framework Cocoa
@@ -14,6 +14,8 @@ import "C"
 import (
 	"time"
 	"unsafe"
+
+	"bunghole/internal/types"
 )
 
 type ClipboardHandler struct {
@@ -21,7 +23,7 @@ type ClipboardHandler struct {
 	sendFn      func(string)
 }
 
-func NewClipboardHandler(displayName string, sendFn func(string)) (ClipboardSync, error) {
+func NewClipboardHandler(displayName string, sendFn func(string)) (types.ClipboardSync, error) {
 	C.clip_init()
 	return &ClipboardHandler{sendFn: sendFn}, nil
 }

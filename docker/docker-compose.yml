@@ -1,0 +1,17 @@
+services:
+  bunghole:
+    build: .
+    network_mode: host
+    runtime: nvidia
+    command: ["--addr", "${ADDR:-:8080}", "--token", "${TOKEN:-changeme}"]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    devices:
+      - /dev/tty0:/dev/tty0
+      - /dev/tty7:/dev/tty7
+      - /dev/tty8:/dev/tty8
+    volumes:
+      - /dev/shm:/dev/shm
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+    privileged: true

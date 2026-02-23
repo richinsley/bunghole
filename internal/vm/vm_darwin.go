@@ -1,6 +1,6 @@
 //go:build darwin
 
-package main
+package vm
 
 /*
 #cgo CFLAGS: -mmacosx-version-min=14.0 -fobjc-arc
@@ -37,18 +37,11 @@ int vm_install(const char *bundle, const char *ipsw,
 */
 import "C"
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"unsafe"
-)
-
-var (
-	flagVM      = flag.Bool("vm", false, "Run macOS VM and stream its display")
-	flagVMShare = flag.String("vm-share", "", "Directory to share with VM via VirtioFS")
-	flagDisk    = flag.Int("disk", 64, "VM disk size in GB (used with setup)")
 )
 
 var globalVM *VMManager
@@ -58,9 +51,12 @@ type VMManager struct {
 	bundlePath string
 	window     unsafe.Pointer
 	view       unsafe.Pointer
-	width      int
-	height     int
+	Width      int
+	Height     int
 }
+
+func SetGlobal(vm *VMManager) { globalVM = vm }
+func GetGlobal() *VMManager   { return globalVM }
 
 func NewVMManager(bundlePath, sharedDir string, w, h int) (*VMManager, error) {
 	cBundle := C.CString(bundlePath)
@@ -82,8 +78,8 @@ func NewVMManager(bundlePath, sharedDir string, w, h int) (*VMManager, error) {
 		bundlePath: bundlePath,
 		window:     unsafe.Pointer(C.vm_get_window(&handle)),
 		view:       unsafe.Pointer(C.vm_get_view(&handle)),
-		width:      w,
-		height:     h,
+		Width:      w,
+		Height:     h,
 	}, nil
 }
 
@@ -103,12 +99,12 @@ func (vm *VMManager) Stop() {
 func (vm *VMManager) Window() unsafe.Pointer { return vm.window }
 func (vm *VMManager) View() unsafe.Pointer   { return vm.view }
 
-func vmBundlePath() string {
+func BundlePath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, "Library", "Application Support", "bunghole", "vm")
 }
 
-func bundleExists(path string) bool {
+func BundleExists(path string) bool {
 	hwPath := filepath.Join(path, "hardware.json")
 	diskPath := filepath.Join(path, "disk.img")
 	_, err1 := os.Stat(hwPath)
@@ -116,12 +112,10 @@ func bundleExists(path string) bool {
 	return err1 == nil && err2 == nil
 }
 
-// runSetup handles the "bunghole setup" subcommand
-func runSetup() {
-	diskGB := *flagDisk
-	bundlePath := vmBundlePath()
+func RunSetup(diskGB int) {
+	bundlePath := BundlePath()
 
-	if bundleExists(bundlePath) {
+	if BundleExists(bundlePath) {
 		log.Printf("VM bundle already exists at %s", bundlePath)
 		log.Printf("Delete it first to re-setup: rm -rf '%s'", bundlePath)
 		os.Exit(1)
@@ -138,7 +132,6 @@ func runSetup() {
 
 	log.Printf("restore URL: %s", restoreURL)
 
-	// Download IPSW
 	ipswDir := filepath.Join(filepath.Dir(bundlePath), "cache")
 	os.MkdirAll(ipswDir, 0755)
 	ipswPath := filepath.Join(ipswDir, "restore.ipsw")
@@ -158,7 +151,6 @@ func runSetup() {
 		log.Printf("using cached IPSW at %s", ipswPath)
 	}
 
-	// Create bundle
 	log.Printf("creating VM bundle (disk: %d GB)...", diskGB)
 	cIPSW := C.CString(ipswPath)
 	cBundle := C.CString(bundlePath)
@@ -169,7 +161,6 @@ func runSetup() {
 		log.Fatal("failed to create VM bundle")
 	}
 
-	// Install macOS
 	log.Printf("installing macOS (this may take a while)...")
 	if ret := C.vm_install(cBundle, cIPSW, nil); ret != 0 {
 		log.Fatal("macOS installation failed")
@@ -180,8 +171,7 @@ func runSetup() {
 	log.Printf("Start with: bunghole --vm --token <secret>")
 }
 
-// autoProvision runs setup non-interactively with defaults
-func autoProvision(bundlePath string) error {
+func AutoProvision(bundlePath string) error {
 	log.Printf("auto-provisioning VM (this will take a while)...")
 
 	var cURL *C.char
@@ -225,16 +215,10 @@ func autoProvision(bundlePath string) error {
 	return nil
 }
 
-// vmNSAppRun blocks on NSApplication run loop (call from main goroutine)
-func vmNSAppRun() {
+func NSAppRun() {
 	C.vm_nsapp_run()
 }
 
-// vmNSAppStop exits the NSApplication run loop
-func vmNSAppStop() {
+func NSAppStop() {
 	C.vm_nsapp_stop()
-}
-
-func isVMMode() bool {
-	return *flagVM
 }

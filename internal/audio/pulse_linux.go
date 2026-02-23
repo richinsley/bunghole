@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package audio
 
 import (
 	"encoding/binary"
@@ -8,6 +8,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"bunghole/internal/types"
 
 	"github.com/hraban/opus"
 	"github.com/jfreymuth/pulse"
@@ -65,7 +67,7 @@ func (p *pcmCollector) drain(count int) []int16 {
 	return out
 }
 
-func NewAudioCapture() (AudioCapturer, error) {
+func NewAudioCapture() (types.AudioCapturer, error) {
 	client, err := pulse.NewClient(
 		pulse.ClientApplicationName("bunghole"),
 	)
@@ -87,7 +89,7 @@ func NewAudioCapture() (AudioCapturer, error) {
 	return ac, nil
 }
 
-func (ac *AudioCapture) Run(packets chan<- *OpusPacket, stop <-chan struct{}) {
+func (ac *AudioCapture) Run(packets chan<- *types.OpusPacket, stop <-chan struct{}) {
 	collector := &pcmCollector{
 		format: proto.FormatInt16LE,
 	}
@@ -135,7 +137,7 @@ func (ac *AudioCapture) Run(packets chan<- *OpusPacket, stop <-chan struct{}) {
 				continue
 			}
 
-			pkt := &OpusPacket{
+			pkt := &types.OpusPacket{
 				Data:     make([]byte, encoded),
 				Duration: time.Duration(frameDuration) * time.Millisecond,
 			}

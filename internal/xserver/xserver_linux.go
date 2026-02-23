@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package xserver
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -63,11 +64,19 @@ func StartXServer(resolution string, gpu int) (*XServer, error) {
 	}
 
 	log.Printf("starting Xorg on %s (vt%d, gpu %d)", display, vtNum, gpu)
-	xorgCmd := exec.Command("sudo", append([]string{"Xorg"}, xorgArgs...)...)
-	xorgCmd.Stdout = os.Stdout
-	xorgCmd.Stderr = os.Stderr
+	xorgCmd := exec.Command("Xorg", xorgArgs...)
+
+	xorgLog, err := os.Create(filepath.Join(tmpDir, "xorg.log"))
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return nil, fmt.Errorf("create xorg log: %w", err)
+	}
+	xorgCmd.Stdout = xorgLog
+	xorgCmd.Stderr = xorgLog
+	xorgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := xorgCmd.Start(); err != nil {
+		xorgLog.Close()
 		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("start Xorg: %w", err)
 	}
@@ -185,10 +194,8 @@ func (xs *XServer) runCmd(env []string, name string, args ...string) (string, er
 func (xs *XServer) StartDesktopSession(resolution string) error {
 	log.Printf("starting desktop session on %s", xs.Display)
 
-	// Find our logind session ID — gnome-shell's ScreenShield needs this
-	// to query the session's Display property via logind. Without it,
-	// gnome-shell crashes with "this._userProxy.Display is null".
-	sessionID := findLogindSession()
+	// Patch gnome-shell's loginManager.js to handle null Display property.
+	overlayEnv := patchGnomeShellJS(xs.tmpDir)
 
 	sessionEnv := append(os.Environ(),
 		"DISPLAY="+xs.Display,
@@ -199,15 +206,10 @@ func (xs *XServer) StartDesktopSession(resolution string) error {
 		"GNOME_SHELL_SESSION_MODE=pop",
 		"GDK_BACKEND=x11",
 	)
-	if sessionID != "" {
-		sessionEnv = append(sessionEnv, "XDG_SESSION_ID="+sessionID)
+	if overlayEnv != "" {
+		sessionEnv = append(sessionEnv, "G_RESOURCE_OVERLAYS="+overlayEnv)
 	}
 
-	// Write a launcher script that starts PipeWire (for audio) and gnome-shell
-	// inside the same dbus session. gnome-shell's mixer needs PipeWire on its
-	// dbus session to show audio devices.
-	// We use a private XDG_RUNTIME_DIR so this PipeWire doesn't conflict with
-	// the user's existing PipeWire from the SSH session.
 	pwRuntimeDir := filepath.Join(xs.tmpDir, "runtime")
 	os.MkdirAll(pwRuntimeDir, 0700)
 	xs.PulseServer = fmt.Sprintf("unix:%s/pulse/native", pwRuntimeDir)
@@ -216,10 +218,13 @@ func (xs *XServer) StartDesktopSession(resolution string) error {
 	launcher := fmt.Sprintf(`#!/bin/bash
 export XDG_RUNTIME_DIR="%s"
 
-# Start PipeWire + WirePlumber (session manager) + PipeWire-Pulse
-# WirePlumber is needed so audio routing/playback works properly.
-# ALSA devices won't appear (udev doesn't work in dbus-run-session)
-# but the auto_null sink handles headless audio fine.
+# Disable lock screen and screensaver so the desktop is immediately visible
+gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver idle-activation-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null
+gsettings set org.gnome.desktop.lockdown disable-lock-screen true 2>/dev/null
+
+# Start PipeWire + WirePlumber + PipeWire-Pulse
 pipewire &
 sleep 0.3
 wireplumber &
@@ -234,10 +239,17 @@ exec gnome-shell --x11
 
 	cmd := exec.Command("dbus-run-session", "--", "bash", launcherPath)
 	cmd.Env = sessionEnv
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	sessionLog, err := os.Create(filepath.Join(xs.tmpDir, "session.log"))
+	if err != nil {
+		return fmt.Errorf("create session log: %w", err)
+	}
+	cmd.Stdout = sessionLog
+	cmd.Stderr = sessionLog
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
+		sessionLog.Close()
 		return fmt.Errorf("start gnome-shell: %w", err)
 	}
 	xs.sessionCmd = cmd
@@ -252,8 +264,6 @@ exec gnome-shell --x11
 		)
 		if out, err := checkCmd.Output(); err == nil && strings.Contains(string(out), "window id") {
 			log.Printf("GNOME Shell is ready on %s", xs.Display)
-			// Configure resolution AFTER gnome-shell starts, because mutter
-			// resets the display to its own preferred mode on startup.
 			if err := xs.configureDisplay(resolution); err != nil {
 				log.Printf("warning: display config failed: %v", err)
 			}
@@ -281,14 +291,13 @@ func (xs *XServer) Stop() {
 
 	if xs.xorgCmd != nil && xs.xorgCmd.Process != nil {
 		log.Printf("stopping Xorg")
-		// Xorg was started with sudo, so we need sudo to kill it
-		exec.Command("sudo", "kill", strconv.Itoa(xs.xorgCmd.Process.Pid)).Run()
+		xs.xorgCmd.Process.Signal(syscall.SIGTERM)
 		done := make(chan error, 1)
 		go func() { done <- xs.xorgCmd.Wait() }()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			exec.Command("sudo", "kill", "-9", strconv.Itoa(xs.xorgCmd.Process.Pid)).Run()
+			xs.xorgCmd.Process.Kill()
 		}
 	}
 
@@ -307,7 +316,6 @@ func (xs *XServer) waitReady(timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		socketPath := fmt.Sprintf("/tmp/.X11-unix/X%s", strings.TrimPrefix(xs.Display, ":"))
 		if _, err := os.Stat(socketPath); err == nil {
-			// Also verify we can connect
 			cmd := exec.Command("xdpyinfo")
 			cmd.Env = append(os.Environ(),
 				"DISPLAY="+xs.Display,
@@ -335,26 +343,45 @@ func findAvailableDisplay() int {
 	return 99
 }
 
-func findLogindSession() string {
-	// Find a logind session for the current user
-	uid := strconv.Itoa(os.Getuid())
-	out, err := exec.Command("loginctl", "list-sessions", "--no-legend", "--no-pager").Output()
+func patchGnomeShellJS(tmpDir string) string {
+	overlayDir := filepath.Join(tmpDir, "gnome-overlay", "misc")
+	os.MkdirAll(overlayDir, 0755)
+
+	out, err := exec.Command("gresource", "extract",
+		"/usr/lib/gnome-shell/libgnome-shell.so",
+		"/org/gnome/shell/misc/loginManager.js").Output()
 	if err != nil {
+		log.Printf("warning: can't extract loginManager.js: %v", err)
 		return ""
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 3 && fields[1] == uid {
-			return fields[0]
-		}
+
+	js := string(out)
+
+	old1 := "let [session, objectPath] = this._userProxy.Display;\n            if (session) {"
+	new1 := "let _display = this._userProxy.Display;\n            let [session, objectPath] = _display || ['', ''];\n            if (session) {"
+	if !strings.Contains(js, old1) {
+		log.Printf("warning: loginManager.js doesn't match expected pattern (Display), skipping patch")
+		return ""
 	}
-	return ""
+	js = strings.Replace(js, old1, new1, 1)
+
+	old2 := "for ([session, objectPath] of this._userProxy.Sessions) {"
+	new2 := "for ([session, objectPath] of (this._userProxy.Sessions || [])) {"
+	if strings.Contains(js, old2) {
+		js = strings.Replace(js, old2, new2, 1)
+	}
+
+	patchedPath := filepath.Join(overlayDir, "loginManager.js")
+	if err := os.WriteFile(patchedPath, []byte(js), 0644); err != nil {
+		log.Printf("warning: can't write patched loginManager.js: %v", err)
+		return ""
+	}
+
+	return fmt.Sprintf("/org/gnome/shell=%s", filepath.Join(tmpDir, "gnome-overlay"))
 }
 
 func findAvailableVT() int {
-	// Try to find a free VT, start from 7 (typical for X)
 	for vt := 7; vt <= 12; vt++ {
-		// Check if any Xorg is already using this VT
 		out, _ := exec.Command("fgconsole").Output()
 		currentVT, _ := strconv.Atoi(strings.TrimSpace(string(out)))
 		if vt != currentVT {
@@ -376,7 +403,6 @@ func generateXauthCookie() string {
 }
 
 func writeXorgConf(path, resolution string, gpuIndex int) error {
-	// Query GPU BusID
 	busID, err := getGPUBusID(gpuIndex)
 	if err != nil {
 		return err
@@ -401,7 +427,7 @@ Section "Screen"
     Device         "Device0"
     Monitor        "Monitor0"
     DefaultDepth   24
-    Option         "MetaModes" "DFP-0: %s +0+0"
+    Option         "MetaModes" "DFP-0: %s +0+0 {ForceFullCompositionPipeline=On}"
     SubSection "Display"
         Depth      24
         Virtual    %s
@@ -418,6 +444,14 @@ EndSection
 }
 
 func getGPUBusID(index int) (string, error) {
+	raw, err := getRawGPUBusID(index)
+	if err != nil {
+		return "", err
+	}
+	return nvidiaToXorgBusID(raw), nil
+}
+
+func getRawGPUBusID(index int) (string, error) {
 	out, err := exec.Command("nvidia-smi",
 		"--query-gpu=pci.bus_id", "--format=csv,noheader").Output()
 	if err != nil {
@@ -429,25 +463,18 @@ func getGPUBusID(index int) (string, error) {
 		return "", fmt.Errorf("GPU index %d out of range (have %d GPUs)", index, len(lines))
 	}
 
-	// nvidia-smi returns format like "00000081:00:00.0", Xorg wants "PCI:129:0:0"
-	busID := strings.TrimSpace(lines[index])
-	return nvidiaToXorgBusID(busID), nil
+	return strings.TrimSpace(lines[index]), nil
 }
 
 func nvidiaToXorgBusID(nvBusID string) string {
-	// Input: "00000081:00:00.0" or similar
-	// Output: "PCI:129:0:0"
 	nvBusID = strings.TrimSpace(nvBusID)
 
-	// Remove domain prefix (everything before first colon that's a long hex)
 	parts := strings.Split(nvBusID, ":")
 	if len(parts) == 3 {
-		// "00000081:00:00.0" -> domain:bus:dev.func
 		domain := parts[0]
 		bus := parts[1]
 		devFunc := strings.Split(parts[2], ".")
 
-		// Parse hex values
 		d, _ := strconv.ParseInt(domain, 16, 64)
 		b, _ := strconv.ParseInt(bus, 16, 64)
 		dev, _ := strconv.ParseInt(devFunc[0], 16, 64)
@@ -456,11 +483,9 @@ func nvidiaToXorgBusID(nvBusID string) string {
 			fn, _ = strconv.ParseInt(devFunc[1], 16, 64)
 		}
 
-		_ = d // domain is typically 0 for PCI bus ID in Xorg
+		_ = d
 		return fmt.Sprintf("PCI:%d:%d:%d", b, dev, fn)
 	}
 
-	// Fallback: try to parse as-is
 	return "PCI:" + nvBusID
 }
-

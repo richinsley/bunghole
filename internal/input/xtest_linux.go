@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package input
 
 /*
 #cgo pkg-config: x11 xtst
@@ -91,11 +91,13 @@ import (
 	"log"
 	"strings"
 	"unsafe"
+
+	"bunghole/internal/types"
 )
 
 type InputHandler struct{}
 
-func NewInputHandler(displayName string) (EventInjector, error) {
+func NewInputHandler(displayName string) (types.EventInjector, error) {
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 
@@ -105,7 +107,7 @@ func NewInputHandler(displayName string) (EventInjector, error) {
 	return &InputHandler{}, nil
 }
 
-func (ih *InputHandler) Inject(event InputEvent) {
+func (ih *InputHandler) Inject(event types.InputEvent) {
 	switch event.Type {
 	case "mousemove":
 		if event.Relative {
@@ -174,47 +176,47 @@ func codeToKeysym(code, key string) uint {
 
 // X11 keysym constants
 const (
-	XK_BackSpace  = 0xFF08
-	XK_Tab        = 0xFF09
-	XK_Return     = 0xFF0D
-	XK_Escape     = 0xFF1B
-	XK_Delete     = 0xFFFF
-	XK_Home       = 0xFF50
-	XK_Left       = 0xFF51
-	XK_Up         = 0xFF52
-	XK_Right      = 0xFF53
-	XK_Down       = 0xFF54
-	XK_Page_Up    = 0xFF55
-	XK_Page_Down  = 0xFF56
-	XK_End        = 0xFF57
-	XK_Insert     = 0xFF63
-	XK_Shift_L    = 0xFFE1
-	XK_Shift_R    = 0xFFE2
-	XK_Control_L  = 0xFFE3
-	XK_Control_R  = 0xFFE4
-	XK_Caps_Lock  = 0xFFE5
-	XK_Alt_L      = 0xFFE9
-	XK_Alt_R      = 0xFFEA
-	XK_Super_L    = 0xFFEB
-	XK_Super_R    = 0xFFEC
-	XK_F1         = 0xFFBE
-	XK_F2         = 0xFFBF
-	XK_F3         = 0xFFC0
-	XK_F4         = 0xFFC1
-	XK_F5         = 0xFFC2
-	XK_F6         = 0xFFC3
-	XK_F7         = 0xFFC4
-	XK_F8         = 0xFFC5
-	XK_F9         = 0xFFC6
-	XK_F10        = 0xFFC7
-	XK_F11        = 0xFFC8
-	XK_F12        = 0xFFC9
-	XK_space      = 0x0020
-	XK_Print      = 0xFF61
+	XK_BackSpace   = 0xFF08
+	XK_Tab         = 0xFF09
+	XK_Return      = 0xFF0D
+	XK_Escape      = 0xFF1B
+	XK_Delete      = 0xFFFF
+	XK_Home        = 0xFF50
+	XK_Left        = 0xFF51
+	XK_Up          = 0xFF52
+	XK_Right       = 0xFF53
+	XK_Down        = 0xFF54
+	XK_Page_Up     = 0xFF55
+	XK_Page_Down   = 0xFF56
+	XK_End         = 0xFF57
+	XK_Insert      = 0xFF63
+	XK_Shift_L     = 0xFFE1
+	XK_Shift_R     = 0xFFE2
+	XK_Control_L   = 0xFFE3
+	XK_Control_R   = 0xFFE4
+	XK_Caps_Lock   = 0xFFE5
+	XK_Alt_L       = 0xFFE9
+	XK_Alt_R       = 0xFFEA
+	XK_Super_L     = 0xFFEB
+	XK_Super_R     = 0xFFEC
+	XK_F1          = 0xFFBE
+	XK_F2          = 0xFFBF
+	XK_F3          = 0xFFC0
+	XK_F4          = 0xFFC1
+	XK_F5          = 0xFFC2
+	XK_F6          = 0xFFC3
+	XK_F7          = 0xFFC4
+	XK_F8          = 0xFFC5
+	XK_F9          = 0xFFC6
+	XK_F10         = 0xFFC7
+	XK_F11         = 0xFFC8
+	XK_F12         = 0xFFC9
+	XK_space       = 0x0020
+	XK_Print       = 0xFF61
 	XK_Scroll_Lock = 0xFF14
-	XK_Pause      = 0xFF13
-	XK_Num_Lock   = 0xFF7F
-	XK_Menu       = 0xFF67
+	XK_Pause       = 0xFF13
+	XK_Num_Lock    = 0xFF7F
+	XK_Menu        = 0xFF67
 )
 
 var codeMap = map[string]uint{
@@ -287,23 +289,23 @@ var codeMap = map[string]uint{
 }
 
 var keyMap = map[string]uint{
-	"backspace": XK_BackSpace,
-	"tab":       XK_Tab,
-	"enter":     XK_Return,
-	"escape":    XK_Escape,
-	"delete":    XK_Delete,
-	"home":      XK_Home,
-	"end":       XK_End,
-	"pageup":    XK_Page_Up,
-	"pagedown":  XK_Page_Down,
-	"arrowleft": XK_Left,
-	"arrowup":   XK_Up,
-	"arrowright": XK_Right,
-	"arrowdown": XK_Down,
-	"insert":    XK_Insert,
-	"shift":     XK_Shift_L,
-	"control":   XK_Control_L,
-	"alt":       XK_Alt_L,
-	"meta":      XK_Super_L,
-	" ":         XK_space,
+	"backspace":  XK_BackSpace,
+	"tab":        XK_Tab,
+	"enter":      XK_Return,
+	"escape":     XK_Escape,
+	"delete":     XK_Delete,
+	"home":       XK_Home,
+	"end":        XK_End,
+	"pageup":     XK_Page_Up,
+	"pagedown":   XK_Page_Down,
+	"arrowleft":  XK_Left,
+	"arrowup":    XK_Up,
+	"arrowright":  XK_Right,
+	"arrowdown":  XK_Down,
+	"insert":     XK_Insert,
+	"shift":      XK_Shift_L,
+	"control":    XK_Control_L,
+	"alt":        XK_Alt_L,
+	"meta":       XK_Super_L,
+	" ":          XK_space,
 }

@@ -1,6 +1,6 @@
 //go:build linux
 
-package main
+package clipboard
 
 /*
 #cgo pkg-config: x11
@@ -159,6 +159,8 @@ import (
 	"log"
 	"time"
 	"unsafe"
+
+	"bunghole/internal/types"
 )
 
 type ClipboardHandler struct {
@@ -166,7 +168,7 @@ type ClipboardHandler struct {
 	sendFn      func(string) // callback to send clipboard to client
 }
 
-func NewClipboardHandler(displayName string, sendFn func(string)) (ClipboardSync, error) {
+func NewClipboardHandler(displayName string, sendFn func(string)) (types.ClipboardSync, error) {
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 

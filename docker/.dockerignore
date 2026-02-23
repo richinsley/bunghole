@@ -1,0 +1,6 @@
+.git
+bunghole
+build/
+*.log
+.DS_Store
+.idea/

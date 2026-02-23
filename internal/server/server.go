@@ -1,144 +1,91 @@
-package main
+package server
 
 import (
-	"embed"
-	"flag"
 	"fmt"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+	"unsafe"
+
+	"bunghole/internal/audio"
+	"bunghole/internal/session"
+	"bunghole/internal/types"
+	"bunghole/web"
 
 	"github.com/google/uuid"
 	"github.com/pion/webrtc/v4"
 )
 
-//go:embed web/*
-var webContent embed.FS
+// CapturerFactory creates a screen capturer for the given display.
+type CapturerFactory func(display string, fps, gpu int) (types.MediaCapturer, error)
 
-var (
-	flagDisplay = flag.String("display", "", "X11 display to capture (auto-detected or started if empty)")
-	flagAddr    = flag.String("addr", ":8080", "HTTP listen address")
-	flagToken   = flag.String("token", "", "Bearer token for authentication (required)")
-	flagFPS     = flag.Int("fps", 30, "Capture frame rate")
-	flagBitrate = flag.Int("bitrate", 4000, "Video bitrate in kbps")
-	flagGPU     = flag.Int("gpu", 0, "GPU index for Xorg (0=first, 1=second)")
-	flagCodec   = flag.String("codec", "h264", "Video codec (h264 or h265)")
-	flagGOP     = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
-)
+// EncoderFactory creates a video encoder.
+type EncoderFactory func(width, height, fps, bitrateKbps, gpu int, codec string, gop int, cudaCtx, cuMemcpy2D unsafe.Pointer) (types.VideoEncoder, error)
+
+// Config holds all server configuration.
+type Config struct {
+	Display string
+	Token   string
+	FPS     int
+	Bitrate int
+	GPU     int
+	Codec   string
+	GOP     int
+	Addr    string
+	Stats   bool
+
+	NewCapturer  CapturerFactory
+	NewEncoder   EncoderFactory
+	InputFactory session.InputHandlerFactory
+	ClipFactory  session.ClipboardHandlerFactory
+}
 
 type Server struct {
-	display string
-	token   string
-	fps     int
-	bitrate int
-	gpu     int
-	codec   string
-	gop     int
+	cfg Config
 
 	mu       sync.Mutex
-	session  *Session
-	capturer MediaCapturer
-	encoder  VideoEncoder
-	audio    AudioCapturer
+	sess     *session.Session
+	capturer types.MediaCapturer
+	encoder  types.VideoEncoder
+	audio    types.AudioCapturer
 }
 
-func main() {
-	flag.Parse()
-
-	// Subcommand: bunghole setup
-	if flag.NArg() > 0 && flag.Arg(0) == "setup" {
-		runtime.LockOSThread()
-		go func() {
-			runSetup()
-			vmNSAppStop()
-		}()
-		vmNSAppRun()
-		return
-	}
-
-	if isVMMode() {
-		runtime.LockOSThread()
-		go runServer()
-		vmNSAppRun()
-	} else {
-		runServer()
-	}
+func New(cfg Config) *Server {
+	return &Server{cfg: cfg}
 }
 
-func runServer() {
-	if *flagToken == "" {
-		log.Fatal("--token is required")
-	}
-
-	display := *flagDisplay
-
-	cleanup, err := platformInit(&display, *flagGPU)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if display == "" {
-		log.Fatal("no display available — use --display, set DISPLAY env, or use --start-x")
-	}
-
-	codec := *flagCodec
-	if codec != "h264" && codec != "h265" {
-		log.Fatalf("--codec must be h264 or h265, got %q", codec)
-	}
-
-	srv := &Server{
-		display: display,
-		token:   *flagToken,
-		fps:     *flagFPS,
-		bitrate: *flagBitrate,
-		gpu:     *flagGPU,
-		codec:   codec,
-		gop:     *flagGOP,
-	}
-
+func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", srv.handleIndex)
-	mux.HandleFunc("GET /mode", srv.handleMode)
-	mux.HandleFunc("POST /whep", srv.handleWHEPOffer)
-	mux.HandleFunc("PATCH /whep/{id}", srv.handleWHEPPatch)
-	mux.HandleFunc("DELETE /whep/{id}", srv.handleWHEPDelete)
-	mux.HandleFunc("OPTIONS /whep", srv.handleWHEPOptions)
-	mux.HandleFunc("OPTIONS /whep/{id}", srv.handleWHEPOptions)
-
-	// Handle graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		log.Printf("received %s, shutting down...", sig)
-		srv.mu.Lock()
-		srv.teardownLocked()
-		srv.mu.Unlock()
-		cleanup()
-		if isVMMode() {
-			vmNSAppStop()
-		}
-		os.Exit(0)
-	}()
+	mux.HandleFunc("GET /", s.handleIndex)
+	mux.HandleFunc("GET /mode", s.handleMode)
+	mux.HandleFunc("POST /whep", s.handleWHEPOffer)
+	mux.HandleFunc("PATCH /whep/{id}", s.handleWHEPPatch)
+	mux.HandleFunc("DELETE /whep/{id}", s.handleWHEPDelete)
+	mux.HandleFunc("OPTIONS /whep", s.handleWHEPOptions)
+	mux.HandleFunc("OPTIONS /whep/{id}", s.handleWHEPOptions)
+	mux.HandleFunc("GET /debug/frame", s.handleDebugFrame)
 
 	log.Printf("starting bunghole on %s (display %s, %d fps, %d kbps, codec %s)",
-		*flagAddr, display, *flagFPS, *flagBitrate, codec)
+		s.cfg.Addr, s.cfg.Display, s.cfg.FPS, s.cfg.Bitrate, s.cfg.Codec)
 
-	if err := http.ListenAndServe(*flagAddr, mux); err != nil {
-		log.Fatal(err)
-	}
+	return http.ListenAndServe(s.cfg.Addr, mux)
+}
+
+// Teardown shuts down the active session and releases resources.
+// It acquires the lock internally.
+func (s *Server) Teardown() {
+	s.mu.Lock()
+	s.teardownLocked()
+	s.mu.Unlock()
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
-		data, err := webContent.ReadFile("web/index.html")
+		data, err := web.Content.ReadFile("index.html")
 		if err != nil {
 			http.Error(w, "internal error", 500)
 			return
@@ -148,13 +95,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Serve embedded static files (logo, etc.)
-	http.FileServer(http.FS(webContent)).ServeHTTP(w, r)
+	http.FileServer(http.FS(web.Content)).ServeHTTP(w, r)
 }
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	mode := "desktop"
-	if s.display == "vm" {
+	if s.cfg.Display == "vm" {
 		mode = "vm"
 	}
 	fmt.Fprintf(w, `{"mode":%q}`, mode)
@@ -179,7 +126,7 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 
 	// Single session: tear down existing
 	s.mu.Lock()
-	if s.session != nil {
+	if s.sess != nil {
 		s.teardownLocked()
 	}
 	s.mu.Unlock()
@@ -196,7 +143,8 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := uuid.New().String()
-	sess, err := NewSession(sessionID, s.display, s.codec)
+	sess, err := session.NewSession(sessionID, s.cfg.Display, s.cfg.Codec,
+		s.cfg.InputFactory, s.cfg.ClipFactory)
 	if err != nil {
 		log.Printf("session create error: %v", err)
 		http.Error(w, "internal error", 500)
@@ -230,7 +178,7 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 	<-gatherComplete
 
 	s.mu.Lock()
-	s.session = sess
+	s.sess = sess
 	s.mu.Unlock()
 
 	// Start capture pipeline
@@ -252,7 +200,7 @@ func (s *Server) handleWHEPPatch(w http.ResponseWriter, r *http.Request) {
 
 	id := r.PathValue("id")
 	s.mu.Lock()
-	sess := s.session
+	sess := s.sess
 	s.mu.Unlock()
 
 	if sess == nil || sess.ID != id {
@@ -272,8 +220,6 @@ func (s *Server) handleWHEPPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse ICE candidate from SDP fragment
-	// The candidate line is in the body
 	lines := strings.Split(candidate, "\r\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -302,7 +248,7 @@ func (s *Server) handleWHEPDelete(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.session == nil || s.session.ID != id {
+	if s.sess == nil || s.sess.ID != id {
 		http.Error(w, "not found", 404)
 		return
 	}
@@ -313,24 +259,26 @@ func (s *Server) handleWHEPDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) checkAuth(r *http.Request) bool {
 	auth := r.Header.Get("Authorization")
-	return auth == "Bearer "+s.token
+	return auth == "Bearer "+s.cfg.Token
 }
 
-func (s *Server) startPipeline(sess *Session) {
-	var cap MediaCapturer
-	var err error
-
-	if s.display == "vm" && globalVM != nil {
-		cap, err = NewVMCapturer(globalVM.Window(), s.fps, globalVM.width, globalVM.height)
-	} else {
-		cap, err = NewCapturer(s.display, s.fps)
-	}
+func (s *Server) startPipeline(sess *session.Session) {
+	cap, err := s.cfg.NewCapturer(s.cfg.Display, s.cfg.FPS, s.cfg.GPU)
 	if err != nil {
 		log.Printf("capturer init error: %v", err)
 		return
 	}
 
-	enc, err := NewEncoder(cap.Width(), cap.Height(), s.fps, s.bitrate, s.gpu, s.codec, s.gop)
+	// If the capturer provides a CUDA context, pass it to the encoder
+	// for zero-copy NVENC encoding from GPU memory.
+	var cudaCtx, cuMemcpy2D unsafe.Pointer
+	if cp, ok := cap.(types.CUDAProvider); ok {
+		cudaCtx = cp.CUDAContext()
+		cuMemcpy2D = cp.CuMemcpy2D()
+	}
+
+	enc, err := s.cfg.NewEncoder(cap.Width(), cap.Height(), s.cfg.FPS, s.cfg.Bitrate,
+		s.cfg.GPU, s.cfg.Codec, s.cfg.GOP, cudaCtx, cuMemcpy2D)
 	if err != nil {
 		cap.Close()
 		log.Printf("encoder init error: %v", err)
@@ -343,20 +291,20 @@ func (s *Server) startPipeline(sess *Session) {
 	s.mu.Unlock()
 
 	// Start audio capture (non-fatal if it fails)
-	audio, err := NewAudioCapture()
+	ac, err := audio.NewAudioCapture()
 	if err != nil {
 		log.Printf("audio capture init failed (continuing without audio): %v", err)
 	} else {
 		s.mu.Lock()
-		s.audio = audio
+		s.audio = ac
 		s.mu.Unlock()
 
-		audioPkts := make(chan *OpusPacket, 10)
-		go audio.Run(audioPkts, sess.stop)
+		audioPkts := make(chan *types.OpusPacket, 10)
+		go ac.Run(audioPkts, sess.Stop)
 		go func() {
 			for {
 				select {
-				case <-sess.stop:
+				case <-sess.Stop:
 					return
 				case pkt := <-audioPkts:
 					if err := sess.WriteAudioSample(pkt.Data, pkt.Duration); err != nil {
@@ -368,51 +316,122 @@ func (s *Server) startPipeline(sess *Session) {
 	}
 
 	// Inline capture + encode loop (zero-copy: no channel, no frame copy)
-	// Grab() returns a pointer to the SHM buffer which is valid until the next Grab().
-	// Encode() reads from it synchronously before we grab again.
-	frameDur := time.Duration(float64(time.Second) / float64(s.fps))
+	frameDur := time.Duration(float64(time.Second) / float64(s.cfg.FPS))
 	ticker := time.NewTicker(frameDur)
 	defer ticker.Stop()
 
+	var loopCount, grabFails, encodeFails, encodeNils, sendFails int
+	lastStats := time.Now()
+
 	for {
 		select {
-		case <-sess.stop:
+		case <-sess.Stop:
 			return
 		case <-ticker.C:
+			loopCount++
+			t0 := time.Now()
+
 			frame, err := cap.Grab()
 			if err != nil {
+				grabFails++
 				continue
 			}
+			tGrab := time.Since(t0)
+
+			t1 := time.Now()
 			encoded, err := enc.Encode(frame)
 			if err != nil {
-				log.Printf("encode error: %v", err)
+				encodeFails++
+				if encodeFails <= 5 {
+					log.Printf("encode error: %v", err)
+				}
 				continue
 			}
+			tEncode := time.Since(t1)
+
 			if encoded == nil {
+				encodeNils++
 				continue
 			}
+
+			t2 := time.Now()
 			if err := sess.WriteVideoSample(encoded.Data, frameDur); err != nil {
+				sendFails++
 				return
+			}
+			tSend := time.Since(t2)
+
+			// Report pipeline stats every 5 seconds (opt-in)
+			if s.cfg.Stats && time.Since(lastStats) >= 5*time.Second {
+				log.Printf("pipeline: loops=%d grabFail=%d encFail=%d encNil=%d sendFail=%d | last: grab=%v enc=%v send=%v",
+					loopCount, grabFails, encodeFails, encodeNils, sendFails,
+					tGrab.Round(time.Microsecond), tEncode.Round(time.Microsecond), tSend.Round(time.Microsecond))
+				loopCount = 0
+				grabFails = 0
+				encodeFails = 0
+				encodeNils = 0
+				sendFails = 0
+				lastStats = time.Now()
 			}
 		}
 	}
 }
 
+func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
+	if !s.checkAuth(r) {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+
+	s.mu.Lock()
+	cap := s.capturer
+	s.mu.Unlock()
+
+	var tempCap types.MediaCapturer
+	if cap == nil {
+		var err error
+		tempCap, err = s.cfg.NewCapturer(s.cfg.Display, 1, s.cfg.GPU)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("capturer init: %v", err), 500)
+			return
+		}
+		defer tempCap.Close()
+		cap = tempCap
+	}
+
+	grabber, ok := cap.(types.DebugGrabber)
+	if !ok {
+		http.Error(w, "capturer does not support debug grab", 500)
+		return
+	}
+
+	img, err := grabber.GrabImage()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("grab failed: %v", err), 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	png.Encode(w, img)
+}
+
 func (s *Server) teardownLocked() {
-	if s.session != nil {
-		s.session.Close()
-		s.session = nil
-	}
-	if s.capturer != nil {
-		s.capturer.Close()
-		s.capturer = nil
-	}
-	if s.encoder != nil {
-		s.encoder.Close()
-		s.encoder = nil
+	if s.sess != nil {
+		s.sess.Close()
+		s.sess = nil
 	}
 	if s.audio != nil {
 		s.audio.Close()
 		s.audio = nil
+	}
+	// Close encoder before capturer: encoder uses the CUDA context
+	// owned by the capturer, so it must be freed first.
+	if s.encoder != nil {
+		s.encoder.Close()
+		s.encoder = nil
+	}
+	if s.capturer != nil {
+		s.capturer.Close()
+		s.capturer = nil
 	}
 }

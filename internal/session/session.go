@@ -1,4 +1,4 @@
-package main
+package session
 
 import (
 	"encoding/json"
@@ -7,23 +7,32 @@ import (
 	"sync"
 	"time"
 
+	"bunghole/internal/types"
+
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
+
+// InputHandlerFactory creates an EventInjector for a given display.
+type InputHandlerFactory func(displayName string) (types.EventInjector, error)
+
+// ClipboardHandlerFactory creates a ClipboardSync for a given display
+// with a callback for sending clipboard changes to the client.
+type ClipboardHandlerFactory func(displayName string, sendFn func(string)) (types.ClipboardSync, error)
 
 type Session struct {
 	ID             string
 	PC             *webrtc.PeerConnection
 	VideoTrack     *webrtc.TrackLocalStaticSample
 	AudioTrack     *webrtc.TrackLocalStaticSample
-	InputHandler     EventInjector
-	ClipboardHandler ClipboardSync
-	stop           chan struct{}
+	InputHandler     types.EventInjector
+	ClipboardHandler types.ClipboardSync
+	Stop           chan struct{}
 	closed         bool
 	mu             sync.Mutex
 }
 
-func NewSession(id, displayName, codec string) (*Session, error) {
+func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory, clipboardFactory ClipboardHandlerFactory) (*Session, error) {
 	me := &webrtc.MediaEngine{}
 
 	// Register video codec
@@ -116,14 +125,12 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 		PC:         pc,
 		VideoTrack: videoTrack,
 		AudioTrack: audioTrack,
-		stop:       make(chan struct{}),
+		Stop:       make(chan struct{}),
 	}
 
-	// Set up input handler
-	if displayName == "vm" && globalVM != nil {
-		sess.InputHandler = NewVMInputHandler(globalVM.View())
-	} else {
-		ih, err := NewInputHandler(displayName)
+	// Set up input handler via factory
+	if inputFactory != nil {
+		ih, err := inputFactory(displayName)
 		if err != nil {
 			log.Printf("warning: input handler init failed: %v", err)
 		} else {
@@ -137,7 +144,7 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 		case "input":
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				if sess.InputHandler != nil {
-					var event InputEvent
+					var event types.InputEvent
 					if err := json.Unmarshal(msg.Data, &event); err != nil {
 						return
 					}
@@ -145,13 +152,12 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 				}
 			})
 		case "clipboard":
-			// Clipboard sync deferred for VM mode (needs vsock guest agent)
-			if displayName == "vm" {
+			if clipboardFactory == nil {
 				break
 			}
 			// Set up clipboard handler when the channel opens
 			dc.OnOpen(func() {
-				ch, err := NewClipboardHandler(displayName, func(text string) {
+				ch, err := clipboardFactory(displayName, func(text string) {
 					if dc.ReadyState() == webrtc.DataChannelStateOpen {
 						dc.SendText(text)
 					}
@@ -163,7 +169,7 @@ func NewSession(id, displayName, codec string) (*Session, error) {
 				sess.mu.Lock()
 				sess.ClipboardHandler = ch
 				sess.mu.Unlock()
-				go ch.Run(sess.stop)
+				go ch.Run(sess.Stop)
 			})
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				sess.mu.Lock()
@@ -209,7 +215,7 @@ func (s *Session) Close() {
 		return
 	}
 	s.closed = true
-	close(s.stop)
+	close(s.Stop)
 
 	if s.InputHandler != nil {
 		s.InputHandler.Close()

@@ -53,16 +53,22 @@ See [ARCHITECTURE_MACOS.md](ARCHITECTURE_MACOS.md) for details.
 
 ## Build
 
-### Linux
+### cmake (recommended)
 
 ```
-go build -tags nolibopusfile
+mkdir build && cd build
+cmake ..
+make
 ```
 
-### macOS
+### go build
 
 ```
-go build
+# Linux
+go build -tags nolibopusfile -o bunghole ./cmd/bunghole
+
+# macOS
+go build -o bunghole ./cmd/bunghole
 codesign --force --sign - --entitlements entitlements.plist ./bunghole
 ```
 
@@ -84,6 +90,7 @@ bunghole --token SECRET [flags]
 | `--bitrate` | `4000` | Video bitrate in kbps |
 | `--codec` | `h264` | Video codec (`h264` or `h265`) |
 | `--gop` | `0` | Keyframe interval in frames (0 = 2x FPS) |
+| `--stats` | `false` | Log pipeline stats every 5 seconds |
 
 ### Linux Flags
 
