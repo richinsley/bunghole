@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"time"
 
 	"bunghole/internal/types"
 
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 // InputHandlerFactory creates an EventInjector for a given display.
@@ -21,21 +19,20 @@ type InputHandlerFactory func(displayName string) (types.EventInjector, error)
 type ClipboardHandlerFactory func(displayName string, sendFn func(string)) (types.ClipboardSync, error)
 
 type Session struct {
-	ID             string
-	PC             *webrtc.PeerConnection
-	VideoTrack     *webrtc.TrackLocalStaticSample
-	AudioTrack     *webrtc.TrackLocalStaticSample
+	ID               string
+	PC               *webrtc.PeerConnection
 	InputHandler     types.EventInjector
 	ClipboardHandler types.ClipboardSync
-	Stop           chan struct{}
-	closed         bool
-	mu             sync.Mutex
+	Stop             chan struct{}
+	closed           bool
+	mu               sync.Mutex
 }
 
-func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory, clipboardFactory ClipboardHandlerFactory) (*Session, error) {
+// newPeerConnection creates a PeerConnection with the given codec registered
+// and the shared tracks added.
+func newPeerConnection(codec string, videoTrack, audioTrack *webrtc.TrackLocalStaticSample) (*webrtc.PeerConnection, error) {
 	me := &webrtc.MediaEngine{}
 
-	// Register video codec
 	var videoMimeType string
 	var videoFmtp string
 	var videoPayloadType webrtc.PayloadType
@@ -61,7 +58,6 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 		return nil, fmt.Errorf("register video codec: %w", err)
 	}
 
-	// Register Opus codec
 	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{
 			MimeType:  webrtc.MimeTypeOpus,
@@ -74,27 +70,9 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 	}
 
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(me))
-
-	config := webrtc.Configuration{
-		// LAN only — no STUN/TURN
-	}
-
-	pc, err := api.NewPeerConnection(config)
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return nil, fmt.Errorf("create peer connection: %w", err)
-	}
-
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{
-			MimeType:    videoMimeType,
-			ClockRate:   90000,
-			SDPFmtpLine: videoFmtp,
-		},
-		"video", "bunghole",
-	)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("create video track: %w", err)
 	}
 
 	if _, err = pc.AddTrack(videoTrack); err != nil {
@@ -102,30 +80,26 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 		return nil, fmt.Errorf("add video track: %w", err)
 	}
 
-	audioTrack, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{
-			MimeType:  webrtc.MimeTypeOpus,
-			ClockRate: 48000,
-			Channels:  2,
-		},
-		"audio", "bunghole",
-	)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("create audio track: %w", err)
-	}
-
 	if _, err = pc.AddTrack(audioTrack); err != nil {
 		pc.Close()
 		return nil, fmt.Errorf("add audio track: %w", err)
 	}
 
+	return pc, nil
+}
+
+// NewSession creates a controller session with data channels for input/clipboard.
+// The shared video and audio tracks are added to the PeerConnection.
+func NewSession(id, displayName, codec string, videoTrack, audioTrack *webrtc.TrackLocalStaticSample, inputFactory InputHandlerFactory, clipboardFactory ClipboardHandlerFactory) (*Session, error) {
+	pc, err := newPeerConnection(codec, videoTrack, audioTrack)
+	if err != nil {
+		return nil, err
+	}
+
 	sess := &Session{
-		ID:         id,
-		PC:         pc,
-		VideoTrack: videoTrack,
-		AudioTrack: audioTrack,
-		Stop:       make(chan struct{}),
+		ID:   id,
+		PC:   pc,
+		Stop: make(chan struct{}),
 	}
 
 	// Set up input handler via factory
@@ -155,7 +129,6 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 			if clipboardFactory == nil {
 				break
 			}
-			// Set up clipboard handler when the channel opens
 			dc.OnOpen(func() {
 				ch, err := clipboardFactory(displayName, func(text string) {
 					if dc.ReadyState() == webrtc.DataChannelStateOpen {
@@ -183,7 +156,7 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("peer connection state: %s", state.String())
+		log.Printf("controller %s connection state: %s", id, state.String())
 		if state == webrtc.PeerConnectionStateFailed ||
 			state == webrtc.PeerConnectionStateDisconnected ||
 			state == webrtc.PeerConnectionStateClosed {
@@ -194,18 +167,30 @@ func NewSession(id, displayName, codec string, inputFactory InputHandlerFactory,
 	return sess, nil
 }
 
-func (s *Session) WriteVideoSample(data []byte, dur time.Duration) error {
-	return s.VideoTrack.WriteSample(media.Sample{
-		Data:     data,
-		Duration: dur,
-	})
-}
+// NewViewerSession creates a view-only session (no data channels, no input).
+// The shared video and audio tracks are added to the PeerConnection.
+func NewViewerSession(id, codec string, videoTrack, audioTrack *webrtc.TrackLocalStaticSample) (*Session, error) {
+	pc, err := newPeerConnection(codec, videoTrack, audioTrack)
+	if err != nil {
+		return nil, err
+	}
 
-func (s *Session) WriteAudioSample(data []byte, dur time.Duration) error {
-	return s.AudioTrack.WriteSample(media.Sample{
-		Data:     data,
-		Duration: dur,
+	sess := &Session{
+		ID:   id,
+		PC:   pc,
+		Stop: make(chan struct{}),
+	}
+
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("viewer %s connection state: %s", id, state.String())
+		if state == webrtc.PeerConnectionStateFailed ||
+			state == webrtc.PeerConnectionStateDisconnected ||
+			state == webrtc.PeerConnectionStateClosed {
+			sess.Close()
+		}
 	})
+
+	return sess, nil
 }
 
 func (s *Session) Close() {
