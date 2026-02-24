@@ -58,6 +58,9 @@ bunghole --token SECRET [flags]
 | `--resolution` | `1920x1080` | Screen resolution (with `--start-x`) |
 | `--stats` | `false` | Log pipeline stats every 5 seconds |
 | `--experimental-nvfbc` | `false` | Enable experimental NvFBC capture path |
+| `--tls` | `false` | Enable TLS with auto-generated self-signed certificate |
+| `--tls-cert` | | Path to TLS certificate file (PEM) |
+| `--tls-key` | | Path to TLS private key file (PEM) |
 
 ### Examples
 
@@ -76,7 +79,17 @@ Use a specific GPU (e.g., second GPU for NVENC + NvFBC):
 bunghole --token mysecret --start-x --gpu 1 --experimental-nvfbc
 ```
 
-Then open `http://<host>:8080` in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
+Enable HTTPS with a self-signed certificate (required for clipboard sync over non-localhost):
+```
+bunghole --token mysecret --tls
+```
+
+Use your own TLS certificate (e.g., from Let's Encrypt):
+```
+bunghole --token mysecret --tls-cert /etc/letsencrypt/live/example.com/fullchain.pem --tls-key /etc/letsencrypt/live/example.com/privkey.pem
+```
+
+Then open `http://<host>:8080` (or `https://<host>:8080` with TLS) in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
 
 ### Viewer Streams
 
@@ -198,6 +211,8 @@ The input handler maps these to X11 calls:
 
 ### Clipboard
 
+> **Note:** The browser Clipboard API (`navigator.clipboard`) requires a [secure context](https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API#security_considerations). Clipboard sync works over `localhost` without TLS, but remote connections require HTTPS (`--tls` or `--tls-cert`/`--tls-key`).
+
 Bidirectional clipboard sync uses the X11 selection protocol:
 
 **Server to client**: A 250ms polling loop checks clipboard ownership. When another X11 app takes ownership, the handler requests `CLIPBOARD` as `UTF8_STRING` via `XConvertSelection`. The data arrives via `SelectionNotify` and is sent to the browser over the clipboard data channel.
@@ -220,7 +235,7 @@ Cleanup kills all spawned processes and removes temporary files (X lock files, s
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/` | GET | Serves the embedded web client |
-| `/mode` | GET | Returns `{"mode":"desktop"}` or `{"mode":"vm"}` |
+| `/config` | GET | Returns guest config JSON (os, type, cursor, clipboard) |
 | `/whep` | POST | Controller: SDP offer → answer |
 | `/whep/{id}` | PATCH | Controller: trickle ICE candidates |
 | `/whep/{id}` | DELETE | Controller: disconnect |
@@ -246,12 +261,13 @@ All WHEP endpoints require `Authorization: Bearer <token>`. CORS headers are set
 
 ## Web Client
 
-A single embedded HTML file containing the WebRTC client:
+A single embedded HTML file containing the WebRTC client. Fetches `/config` on connect to adapt behavior based on the guest platform.
 
 - Creates `input` and `clipboard` data channels before sending the offer (controller only)
 - Adds `recvonly` transceivers for video and audio
 - Waits for ICE gathering to complete before POSTing the offer
-- Uses pointer lock for relative mouse input — click the video to engage, Escape to release
+- Click the video to focus input; press Escape to release
 - Scales mouse coordinates to match the video resolution (accounts for `object-fit: contain` letterboxing)
-- Keyboard events are only captured while pointer-locked
-- Paste events send clipboard text to the server; incoming clipboard text is written to the browser clipboard API
+- Keyboard events are only captured while focused
+- Mac host + Linux guest: Meta (Cmd) keys are remapped to Control
+- Paste (Cmd+V / Ctrl+V) reads the host clipboard, sends text over the clipboard data channel, then synthesizes the V keystroke after a 50ms delay

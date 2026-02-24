@@ -1,6 +1,7 @@
 package main
 
 import (
+	crypto_tls "crypto/tls"
 	"flag"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"bunghole/internal/platform"
 	"bunghole/internal/server"
+	tlsutil "bunghole/internal/tls"
 )
 
 var (
@@ -28,6 +30,9 @@ var (
 	flagAllowOrigins   = flag.String("allow-origins", "", "Comma-separated CORS allowlist (in addition to same-origin). Empty = same-origin only")
 	flagAuthFailLimit  = flag.Int("auth-fail-limit", 10, "Max failed auth attempts per client IP per window")
 	flagAuthFailWindow = flag.Duration("auth-fail-window", time.Minute, "Window for auth failure rate limiting")
+	flagTLS            = flag.Bool("tls", false, "Enable TLS with auto-generated self-signed certificate")
+	flagTLSCert        = flag.String("tls-cert", "", "Path to TLS certificate file (PEM)")
+	flagTLSKey         = flag.String("tls-key", "", "Path to TLS private key file (PEM)")
 )
 
 func main() {
@@ -88,6 +93,25 @@ func runServer(cfg *platform.Config) {
 		log.Fatalf("--codec must be h264 or h265, got %q", codec)
 	}
 
+	// TLS validation
+	if (*flagTLSCert != "") != (*flagTLSKey != "") {
+		log.Fatal("--tls-cert and --tls-key must both be set")
+	}
+
+	var serverTLSCert, serverTLSKey string
+	var serverTLSConfig *crypto_tls.Config
+
+	if *flagTLSCert != "" {
+		serverTLSCert = *flagTLSCert
+		serverTLSKey = *flagTLSKey
+	} else if *flagTLS {
+		tc, err := tlsutil.SelfSigned()
+		if err != nil {
+			log.Fatalf("self-signed cert: %v", err)
+		}
+		serverTLSConfig = tc
+	}
+
 	var allowedOrigins []string
 	for _, o := range strings.Split(*flagAllowOrigins, ",") {
 		o = strings.TrimSpace(o)
@@ -111,6 +135,10 @@ func runServer(cfg *platform.Config) {
 		AllowedOrigins: allowedOrigins,
 		AuthFailLimit:  *flagAuthFailLimit,
 		AuthFailWindow: *flagAuthFailWindow,
+
+		TLSCert: serverTLSCert,
+		TLSKey:  serverTLSKey,
+		TLS:     serverTLSConfig,
 
 		NewCapturer:  newCapturer,
 		NewEncoder:   newEncoder,

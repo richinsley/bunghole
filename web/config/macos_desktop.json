@@ -1,0 +1,8 @@
+{
+  "guest": {
+    "os": "macos",
+    "type": "desktop",
+    "cursor": true,
+    "clipboard": true
+  }
+}

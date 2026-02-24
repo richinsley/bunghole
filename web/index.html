@@ -162,7 +162,8 @@ let clipboardDC = null;
 let inputFocused = false;
 let inputHandlersBound = false;
 let videoEl, viewportEl, cursorDot;
-let serverMode = 'desktop'; // 'desktop' or 'vm'
+let config = null;
+const isMacHost = /Mac|iPhone|iPad/.test(navigator.platform);
 
 const loginEl = document.getElementById('login');
 const loginForm = document.getElementById('login-form');
@@ -197,12 +198,13 @@ function setStatus(state, text) {
 async function connect() {
   setStatus('connecting', 'connecting...');
 
-  // Fetch server mode to adapt cursor behavior
+  // Fetch guest config to adapt cursor/key behavior
   try {
-    const modeResp = await fetch('/mode');
-    const modeData = await modeResp.json();
-    serverMode = modeData.mode || 'desktop';
-  } catch (e) { serverMode = 'desktop'; }
+    const cfgResp = await fetch('/config');
+    config = await cfgResp.json();
+  } catch (e) {
+    config = { guest: { os: 'linux', type: 'desktop', cursor: true, clipboard: true } };
+  }
 
   pc = new RTCPeerConnection({
     iceServers: [],
@@ -355,6 +357,16 @@ function videoCoords(e) {
   return { x: Math.round(x), y: Math.round(y) };
 }
 
+function remapKey(key, code) {
+  if (isMacHost && config && config.guest.os === 'linux') {
+    if (code === 'MetaLeft')  return { key: 'Control', code: 'ControlLeft' };
+    if (code === 'MetaRight') return { key: 'Control', code: 'ControlRight' };
+  }
+  return { key, code };
+}
+
+const showCursorDot = () => config && !config.guest.cursor;
+
 function setupInputHandlers() {
   videoEl = document.getElementById('video');
   cursorDot = document.getElementById('cursor-dot');
@@ -362,17 +374,15 @@ function setupInputHandlers() {
   if (inputHandlersBound) return;
   inputHandlersBound = true;
 
-  const isVM = () => serverMode === 'vm';
-
   // Click video to focus input; click outside to blur
   videoEl.addEventListener('mousedown', (e) => {
     if (!inputFocused) {
       inputFocused = true;
       videoEl.classList.add('active');
-      if (isVM()) cursorDot.style.display = 'block';
+      if (showCursorDot()) cursorDot.style.display = 'block';
     }
     e.preventDefault();
-    if (isVM()) {
+    if (showCursorDot()) {
       cursorDot.style.left = e.clientX + 'px';
       cursorDot.style.top = e.clientY + 'px';
     }
@@ -384,7 +394,7 @@ function setupInputHandlers() {
     if (inputFocused && e.target !== videoEl && !videoEl.contains(e.target)) {
       inputFocused = false;
       videoEl.classList.remove('active');
-      if (isVM()) cursorDot.style.display = 'none';
+      if (showCursorDot()) cursorDot.style.display = 'none';
     }
   });
 
@@ -397,7 +407,7 @@ function setupInputHandlers() {
 
   videoEl.addEventListener('mousemove', (e) => {
     if (!inputFocused) return;
-    if (isVM()) {
+    if (showCursorDot()) {
       cursorDot.style.left = e.clientX + 'px';
       cursorDot.style.top = e.clientY + 'px';
     }
@@ -406,11 +416,11 @@ function setupInputHandlers() {
   });
 
   videoEl.addEventListener('mouseleave', () => {
-    if (isVM()) cursorDot.style.display = 'none';
+    if (showCursorDot()) cursorDot.style.display = 'none';
   });
 
   videoEl.addEventListener('mouseenter', () => {
-    if (isVM() && inputFocused) cursorDot.style.display = 'block';
+    if (showCursorDot() && inputFocused) cursorDot.style.display = 'block';
   });
 
   // Scroll
@@ -422,6 +432,9 @@ function setupInputHandlers() {
                 x: c ? c.x : 0, y: c ? c.y : 0 });
   }, { passive: false });
 
+  // Track suppressed keyup codes during paste to avoid double-fire
+  let suppressKeyUp = new Set();
+
   // Keyboard (captured when video is focused)
   document.addEventListener('keydown', (e) => {
     if (!inputFocused) return;
@@ -429,31 +442,48 @@ function setupInputHandlers() {
     if (e.code === 'Escape') {
       inputFocused = false;
       videoEl.classList.remove('active');
-      if (isVM()) cursorDot.style.display = 'none';
+      if (showCursorDot()) cursorDot.style.display = 'none';
       return;
     }
+
+    // Paste: V + modifier (Cmd on Mac remaps to Ctrl, or native Ctrl)
+    if (e.code === 'KeyV' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      suppressKeyUp.add('KeyV');
+      (async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text && clipboardDC && clipboardDC.readyState === 'open') {
+            clipboardDC.send(text);
+          }
+        } catch (err) { /* clipboard read not permitted */ }
+        // Delay so clipboard text arrives before the keystroke
+        await new Promise(r => setTimeout(r, 50));
+        sendInput({ type: 'keydown', key: 'v', code: 'KeyV' });
+        sendInput({ type: 'keyup', key: 'v', code: 'KeyV' });
+      })();
+      return;
+    }
+
     e.preventDefault();
-    sendInput({ type: 'keydown', key: e.key, code: e.code });
+    const mapped = remapKey(e.key, e.code);
+    sendInput({ type: 'keydown', key: mapped.key, code: mapped.code });
   });
 
   document.addEventListener('keyup', (e) => {
     if (!inputFocused) return;
     e.preventDefault();
-    sendInput({ type: 'keyup', key: e.key, code: e.code });
+    if (suppressKeyUp.has(e.code)) {
+      suppressKeyUp.delete(e.code);
+      return;
+    }
+    const mapped = remapKey(e.key, e.code);
+    sendInput({ type: 'keyup', key: mapped.key, code: mapped.code });
   });
 
   // Prevent context menu
   videoEl.addEventListener('contextmenu', (e) => {
     if (inputFocused) e.preventDefault();
-  });
-
-  // Clipboard: paste from browser to remote
-  document.addEventListener('paste', (e) => {
-    if (!inputFocused) return;
-    const text = e.clipboardData.getData('text');
-    if (text && clipboardDC && clipboardDC.readyState === 'open') {
-      clipboardDC.send(text);
-    }
   });
 }
 </script>

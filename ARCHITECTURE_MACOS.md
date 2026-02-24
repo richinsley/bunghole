@@ -46,6 +46,9 @@ bunghole --token SECRET [flags]
 | `--vm-share` | `$HOME` | Directory to share with VM via VirtioFS |
 | `--disk` | `64` | VM disk size in GB (used with `setup`) |
 | `--stats` | `false` | Log pipeline stats every 5 seconds |
+| `--tls` | `false` | Enable TLS with auto-generated self-signed certificate |
+| `--tls-cert` | | Path to TLS certificate file (PEM) |
+| `--tls-key` | | Path to TLS private key file (PEM) |
 
 ### Examples
 
@@ -69,7 +72,17 @@ Stream a macOS VM desktop:
 bunghole --vm --token mysecret --vm-share ~/Projects
 ```
 
-Then open `http://<host>:8080` in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
+Enable HTTPS with a self-signed certificate (required for clipboard sync over non-localhost):
+```
+bunghole --token mysecret --tls
+```
+
+Use your own TLS certificate (e.g., from Let's Encrypt):
+```
+bunghole --token mysecret --tls-cert cert.pem --tls-key key.pem
+```
+
+Then open `http://<host>:8080` (or `https://<host>:8080` with TLS) in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
 
 ### Viewer Streams
 
@@ -149,6 +162,8 @@ Uses CoreGraphics event injection via `CGEventPost(kCGHIDEventTap, ...)`:
 - **Keyboard**: `CGEventCreateKeyboardEvent` with macOS virtual keycodes mapped from the browser's `KeyboardEvent.code`
 
 ### Clipboard
+
+> **Note:** The browser Clipboard API (`navigator.clipboard`) requires a [secure context](https://developer.mozilla.org/en-US/docs/Web/API/Clipboard_API#security_considerations). Clipboard sync works over `localhost` without TLS, but remote connections require HTTPS (`--tls` or `--tls-cert`/`--tls-key`).
 
 Uses NSPasteboard for bidirectional clipboard sync:
 - **Server to client**: A 250ms polling loop checks the pasteboard change count. When it changes, the text content is sent to the browser over the clipboard data channel.
@@ -242,7 +257,7 @@ The rest of the pipeline (encode → write to shared WebRTC tracks) is identical
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/` | GET | Serves the embedded web client |
-| `/mode` | GET | Returns `{"mode":"desktop"}` or `{"mode":"vm"}` |
+| `/config` | GET | Returns guest config JSON (os, type, cursor, clipboard) |
 | `/whep` | POST | Controller: SDP offer → answer |
 | `/whep/{id}` | PATCH | Controller: trickle ICE candidates |
 | `/whep/{id}` | DELETE | Controller: disconnect |
@@ -255,22 +270,18 @@ All WHEP endpoints require `Authorization: Bearer <token>`. CORS headers are set
 
 ## Web Client
 
-Single embedded HTML file. Behavior adapts based on `/mode` endpoint response:
+Single embedded HTML file. Behavior adapts based on `/config` endpoint response:
 
-**Desktop mode** (`{"mode":"desktop"}`):
-- Browser cursor hidden when focused (`.active` class sets `cursor: none`)
-- System cursor visible in the video stream via ScreenCaptureKit
+**Cursor**: When `guest.cursor` is `true` (desktop mode), the system cursor is visible in the video stream. When `false` (VM mode), a white cursor dot (12px circle) tracks mouse position as an overlay since the guest hardware cursor is not captured by ScreenCaptureKit.
 
-**VM mode** (`{"mode":"vm"}`):
-- Browser cursor hidden when focused
-- White cursor dot (12px circle) tracks mouse position as an overlay
-- Guest hardware cursor is not captured by ScreenCaptureKit, so the dot is the only cursor feedback
+**Key remapping**: When a Mac host connects to a Linux guest (`guest.os === "linux"`), Meta (Cmd) keys are remapped to Control so that Cmd+C/V/A/Z produce Ctrl+C/V/A/Z on the remote.
+
+**Paste**: Cmd+V (Mac) or Ctrl+V reads the host clipboard via `navigator.clipboard.readText()`, sends the text over the clipboard data channel, then synthesizes a V keystroke after a 50ms delay so the clipboard text arrives first.
 
 Common behavior:
 - Click video to focus input, Escape to release
 - Absolute mouse coordinates mapped from browser viewport to remote desktop resolution
 - Keyboard events captured only when focused
-- Paste events send clipboard text to server
 
 ## Dependencies
 

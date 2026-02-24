@@ -1,0 +1,8 @@
+{
+  "guest": {
+    "os": "linux",
+    "type": "desktop",
+    "cursor": true,
+    "clipboard": true
+  }
+}

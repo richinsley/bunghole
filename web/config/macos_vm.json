@@ -1,0 +1,8 @@
+{
+  "guest": {
+    "os": "macos",
+    "type": "vm",
+    "cursor": false,
+    "clipboard": false
+  }
+}

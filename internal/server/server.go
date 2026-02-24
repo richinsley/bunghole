@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"image/png"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,10 @@ type Config struct {
 	AuthFailLimit  int
 	AuthFailWindow time.Duration
 
+	TLSCert string      // path to cert file (user-provided mode)
+	TLSKey  string      // path to key file (user-provided mode)
+	TLS     *tls.Config // pre-built TLS config (self-signed mode)
+
 	NewCapturer  CapturerFactory
 	NewEncoder   EncoderFactory
 	InputFactory session.InputHandlerFactory
@@ -54,7 +60,8 @@ type Config struct {
 }
 
 type Server struct {
-	cfg Config
+	cfg         Config
+	guestConfig []byte
 
 	mu sync.Mutex
 
@@ -93,17 +100,31 @@ func New(cfg Config) *Server {
 		cfg.AuthFailWindow = time.Minute
 	}
 
+	configFile := "config/linux_desktop.json"
+	if runtime.GOOS == "darwin" {
+		if cfg.Display == "vm" {
+			configFile = "config/macos_vm.json"
+		} else {
+			configFile = "config/macos_desktop.json"
+		}
+	}
+	guestConfig, err := web.Content.ReadFile(configFile)
+	if err != nil {
+		log.Fatalf("failed to read guest config %s: %v", configFile, err)
+	}
+
 	return &Server{
-		cfg:       cfg,
-		viewers:   make(map[string]*session.Session),
-		authFails: make(map[string]authWindow),
+		cfg:         cfg,
+		guestConfig: guestConfig,
+		viewers:     make(map[string]*session.Session),
+		authFails:   make(map[string]authWindow),
 	}
 }
 
 func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleIndex)
-	mux.HandleFunc("GET /mode", s.handleMode)
+	mux.HandleFunc("GET /config", s.handleConfig)
 
 	// Controller endpoints
 	mux.HandleFunc("POST /whep", s.handleWHEPOffer)
@@ -121,10 +142,28 @@ func (s *Server) ListenAndServe() error {
 
 	mux.HandleFunc("GET /debug/frame", s.handleDebugFrame)
 
-	log.Printf("starting bunghole on %s (display %s, %d fps, %d kbps, codec %s)",
-		s.cfg.Addr, s.cfg.Display, s.cfg.FPS, s.cfg.Bitrate, s.cfg.Codec)
+	srv := &http.Server{
+		Addr:    s.cfg.Addr,
+		Handler: mux,
+	}
 
-	return http.ListenAndServe(s.cfg.Addr, mux)
+	switch {
+	case s.cfg.TLSCert != "" && s.cfg.TLSKey != "":
+		log.Printf("starting bunghole on %s (HTTPS, user-provided cert, display %s, %d fps, %d kbps, codec %s)",
+			s.cfg.Addr, s.cfg.Display, s.cfg.FPS, s.cfg.Bitrate, s.cfg.Codec)
+		return srv.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
+
+	case s.cfg.TLS != nil:
+		srv.TLSConfig = s.cfg.TLS
+		log.Printf("starting bunghole on %s (HTTPS, self-signed cert, display %s, %d fps, %d kbps, codec %s)",
+			s.cfg.Addr, s.cfg.Display, s.cfg.FPS, s.cfg.Bitrate, s.cfg.Codec)
+		return srv.ListenAndServeTLS("", "")
+
+	default:
+		log.Printf("starting bunghole on %s (HTTP, display %s, %d fps, %d kbps, codec %s)",
+			s.cfg.Addr, s.cfg.Display, s.cfg.FPS, s.cfg.Bitrate, s.cfg.Codec)
+		return srv.ListenAndServe()
+	}
 }
 
 // Teardown shuts down all sessions and releases resources.
@@ -149,13 +188,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(web.Content)).ServeHTTP(w, r)
 }
 
-func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	mode := "desktop"
-	if s.cfg.Display == "vm" {
-		mode = "vm"
-	}
-	fmt.Fprintf(w, `{"mode":%q}`, mode)
+	w.Write(s.guestConfig)
 }
 
 func (s *Server) handleWHEPOptions(w http.ResponseWriter, r *http.Request) {

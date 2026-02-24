@@ -18,7 +18,7 @@ Remote desktop streaming over WebRTC. Captures a display, encodes with hardware-
 - **H.264 and H.265** codec support
 - **Opus audio** capture (Linux — PulseAudio/PipeWire)
 - **Full input** — mouse, keyboard, scroll
-- **Clipboard sync** — bidirectional copy/paste
+- **Clipboard sync** — bidirectional copy/paste (requires HTTPS for non-localhost connections)
 - **Viewer streams** — multiple simultaneous view-only connections
 - **macOS VM mode** — isolated macOS desktop with Metal GPU
 - **Headless mode** — start Xorg + GNOME Shell + PipeWire (Linux)
