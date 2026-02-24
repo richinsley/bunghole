@@ -1,11 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"image/png"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +42,11 @@ type Config struct {
 	Addr    string
 	Stats   bool
 
+	OfferTimeout   time.Duration
+	AllowedOrigins []string
+	AuthFailLimit  int
+	AuthFailWindow time.Duration
+
 	NewCapturer  CapturerFactory
 	NewEncoder   EncoderFactory
 	InputFactory session.InputHandlerFactory
@@ -58,18 +66,37 @@ type Server struct {
 	capturer types.MediaCapturer
 	encoder  types.VideoEncoder
 	audio    types.AudioCapturer
-	pipeStop chan struct{}   // closed to stop pipeline goroutine
+	pipeStop chan struct{}  // closed to stop pipeline goroutine
 	pipeWg   sync.WaitGroup // waited before starting a new pipeline
 
 	// Sessions
 	ctrl    *session.Session            // at most one controller
 	viewers map[string]*session.Session // zero or more viewers
+
+	authMu    sync.Mutex
+	authFails map[string]authWindow
+}
+
+type authWindow struct {
+	started time.Time
+	fails   int
 }
 
 func New(cfg Config) *Server {
+	if cfg.OfferTimeout <= 0 {
+		cfg.OfferTimeout = 10 * time.Second
+	}
+	if cfg.AuthFailLimit <= 0 {
+		cfg.AuthFailLimit = 10
+	}
+	if cfg.AuthFailWindow <= 0 {
+		cfg.AuthFailWindow = time.Minute
+	}
+
 	return &Server{
-		cfg:     cfg,
-		viewers: make(map[string]*session.Session),
+		cfg:       cfg,
+		viewers:   make(map[string]*session.Session),
+		authFails: make(map[string]authWindow),
 	}
 }
 
@@ -132,7 +159,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWHEPOptions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 	w.Header().Set("Access-Control-Allow-Methods", "POST, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.Header().Set("Access-Control-Expose-Headers", "Location")
@@ -142,11 +172,13 @@ func (s *Server) handleWHEPOptions(w http.ResponseWriter, r *http.Request) {
 // --- Controller (interactive) endpoints ---
 
 func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 	w.Header().Set("Access-Control-Expose-Headers", "Location")
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -190,6 +222,9 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.OfferTimeout)
+	defer cancel()
+
 	if err := sess.PC.SetRemoteDescription(offer); err != nil {
 		sess.Close()
 		log.Printf("set remote desc error: %v", err)
@@ -213,7 +248,13 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	gatherComplete := webrtc.GatheringCompletePromise(sess.PC)
-	<-gatherComplete
+	select {
+	case <-gatherComplete:
+	case <-ctx.Done():
+		sess.Close()
+		http.Error(w, "offer timeout", 504)
+		return
+	}
 
 	s.mu.Lock()
 	s.ctrl = sess
@@ -229,10 +270,12 @@ func (s *Server) handleWHEPOffer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWHEPPatch(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -250,10 +293,12 @@ func (s *Server) handleWHEPPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWHEPDelete(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -275,11 +320,13 @@ func (s *Server) handleWHEPDelete(w http.ResponseWriter, r *http.Request) {
 // --- Viewer (view-only) endpoints ---
 
 func (s *Server) handleViewerOffer(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 	w.Header().Set("Access-Control-Expose-Headers", "Location")
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -314,6 +361,9 @@ func (s *Server) handleViewerOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.OfferTimeout)
+	defer cancel()
+
 	if err := sess.PC.SetRemoteDescription(offer); err != nil {
 		sess.Close()
 		log.Printf("viewer set remote desc error: %v", err)
@@ -337,7 +387,13 @@ func (s *Server) handleViewerOffer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	gatherComplete := webrtc.GatheringCompletePromise(sess.PC)
-	<-gatherComplete
+	select {
+	case <-gatherComplete:
+	case <-ctx.Done():
+		sess.Close()
+		http.Error(w, "offer timeout", 504)
+		return
+	}
 
 	s.mu.Lock()
 	s.viewers[sessionID] = sess
@@ -352,10 +408,12 @@ func (s *Server) handleViewerOffer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleViewerPatch(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -373,10 +431,12 @@ func (s *Server) handleViewerPatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleViewerDelete(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if !s.applyCORS(w, r) {
+		http.Error(w, "forbidden origin", 403)
+		return
+	}
 
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 
@@ -427,12 +487,97 @@ func (s *Server) addICECandidates(sess *session.Session, w http.ResponseWriter, 
 	w.WriteHeader(204)
 }
 
-func (s *Server) checkAuth(r *http.Request) bool {
+func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	ip := clientIP(r)
+	if s.isRateLimited(ip) {
+		http.Error(w, "too many auth failures", 429)
+		return false
+	}
+
 	auth := r.Header.Get("Authorization")
-	return auth == "Bearer "+s.cfg.Token
+	if auth == "Bearer "+s.cfg.Token {
+		s.clearAuthFailures(ip)
+		return true
+	}
+
+	s.recordAuthFailure(ip)
+	http.Error(w, "unauthorized", 401)
+	return false
 }
 
 // watchSession monitors a session's Stop channel and cleans up when it closes.
+func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	if !s.isAllowedOrigin(origin, r) {
+		return false
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Vary", "Origin")
+	return true
+}
+
+func (s *Server) isAllowedOrigin(origin string, r *http.Request) bool {
+	if sameOrigin(origin, r) {
+		return true
+	}
+	for _, allowed := range s.cfg.AllowedOrigins {
+		if strings.TrimSpace(allowed) == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func sameOrigin(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (s *Server) isRateLimited(ip string) bool {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	st, ok := s.authFails[ip]
+	if !ok {
+		return false
+	}
+	if time.Since(st.started) > s.cfg.AuthFailWindow {
+		delete(s.authFails, ip)
+		return false
+	}
+	return st.fails >= s.cfg.AuthFailLimit
+}
+
+func (s *Server) recordAuthFailure(ip string) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	st := s.authFails[ip]
+	if st.started.IsZero() || time.Since(st.started) > s.cfg.AuthFailWindow {
+		st = authWindow{started: time.Now(), fails: 0}
+	}
+	st.fails++
+	s.authFails[ip] = st
+}
+
+func (s *Server) clearAuthFailures(ip string) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	delete(s.authFails, ip)
+}
+
 func (s *Server) watchSession(sess *session.Session, isController bool) {
 	<-sess.Stop
 
@@ -681,8 +826,7 @@ func (s *Server) runPipeline(cap types.MediaCapturer, enc types.VideoEncoder, vi
 }
 
 func (s *Server) handleDebugFrame(w http.ResponseWriter, r *http.Request) {
-	if !s.checkAuth(r) {
-		http.Error(w, "unauthorized", 401)
+	if !s.checkAuth(w, r) {
 		return
 	}
 

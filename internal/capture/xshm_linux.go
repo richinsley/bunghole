@@ -139,6 +139,8 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"os/exec"
+	"strings"
 	"unsafe"
 
 	"bunghole/internal/types"
@@ -150,8 +152,31 @@ type XshmCapturer struct {
 	fps int
 }
 
-// NewCapturer creates an XShm screen capturer.
+var experimentalNvFBC bool
+
+// SetExperimentalNvFBC toggles the Linux NvFBC capture probe.
+//
+// NvFBC is currently experimental and disabled by default.
+func SetExperimentalNvFBC(enabled bool) {
+	experimentalNvFBC = enabled
+}
+
+// NewCapturer creates a screen capturer.
+//
+// Linux defaults to XShm. NvFBC can be enabled with --experimental-nvfbc.
 func NewCapturer(displayName string, fps, gpu int) (types.MediaCapturer, error) {
+	if experimentalNvFBC {
+		if busID, err := rawPCIBusIDForGPU(gpu); err == nil {
+			cap, err := NewNvFBCCapturer(displayName, fps, busID)
+			if err == nil {
+				return cap, nil
+			}
+			log.Printf("capture: experimental NvFBC unavailable on GPU %d (%s): %v; falling back to XShm", gpu, busID, err)
+		} else {
+			log.Printf("capture: experimental NvFBC probe failed: %v; falling back to XShm", err)
+		}
+	}
+
 	cDisplay := C.CString(displayName)
 	defer C.free(unsafe.Pointer(cDisplay))
 
@@ -161,6 +186,24 @@ func NewCapturer(displayName string, fps, gpu int) (types.MediaCapturer, error) 
 	}
 	log.Printf("capture: XShm (%dx%d)", int(xshm.width), int(xshm.height))
 	return &XshmCapturer{c: xshm, fps: fps}, nil
+}
+
+func rawPCIBusIDForGPU(gpu int) (string, error) {
+	out, err := exec.Command("nvidia-smi", "--query-gpu=pci.bus_id", "--format=csv,noheader").Output()
+	if err != nil {
+		return "", fmt.Errorf("nvidia-smi query failed: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if gpu < 0 || gpu >= len(lines) {
+		return "", fmt.Errorf("GPU index %d out of range (have %d GPUs)", gpu, len(lines))
+	}
+
+	busID := strings.TrimSpace(lines[gpu])
+	if busID == "" {
+		return "", fmt.Errorf("empty PCI bus ID for GPU %d", gpu)
+	}
+	return busID, nil
 }
 
 func (c *XshmCapturer) Width() int  { return int(c.c.width) }

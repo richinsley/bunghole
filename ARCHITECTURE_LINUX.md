@@ -57,6 +57,7 @@ bunghole --token SECRET [flags]
 | `--start-x` | `false` | Start a headless Xorg + GNOME Shell |
 | `--resolution` | `1920x1080` | Screen resolution (with `--start-x`) |
 | `--stats` | `false` | Log pipeline stats every 5 seconds |
+| `--experimental-nvfbc` | `false` | Enable experimental NvFBC capture path |
 
 ### Examples
 
@@ -72,7 +73,7 @@ bunghole --token mysecret --start-x --resolution 2560x1440 --codec h265 --bitrat
 
 Use a specific GPU (e.g., second GPU for NVENC + NvFBC):
 ```
-bunghole --token mysecret --start-x --gpu 1
+bunghole --token mysecret --start-x --gpu 1 --experimental-nvfbc
 ```
 
 Then open `http://<host>:8080` in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
@@ -123,11 +124,11 @@ The pipeline starts when the first session connects and stops when the last disc
 
 ### Frame Capture
 
-Two capture backends, selected automatically:
+Two capture backends are available:
 
-**NvFBC** (preferred on NVIDIA professional GPUs): Captures directly to CUDA device memory in NV12 format via `NVFBC_TOCUDA`. Zero-copy path — the CUDA device pointer is passed directly to NVENC without any CPU-side data transfer.
+**MIT-SHM** (default): `XShmGetImage` reads the root window into a shared memory segment, returning a pointer to BGRA pixel data. The pointer is valid until the next `Grab()` call — no copy is made. The cursor is composited into the frame buffer using `XFixesGetCursorImage` with per-pixel alpha blending.
 
-**MIT-SHM** (fallback): `XShmGetImage` reads the root window into a shared memory segment, returning a pointer to BGRA pixel data. The pointer is valid until the next `Grab()` call — no copy is made. The cursor is composited into the frame buffer using `XFixesGetCursorImage` with per-pixel alpha blending.
+**NvFBC** (experimental, opt-in via `--experimental-nvfbc`): Captures directly to CUDA device memory in NV12 format via `NVFBC_TOCUDA`. Zero-copy path — the CUDA device pointer is passed directly to NVENC without any CPU-side data transfer.
 
 ### Video Encoding
 

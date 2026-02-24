@@ -8,7 +8,7 @@ Remote desktop streaming over WebRTC. Captures a display, encodes with hardware-
 
 ## Platforms
 
-**[Linux](ARCHITECTURE_LINUX.md)** — Captures X11 via NvFBC (zero-copy GPU) or MIT-SHM. Encodes with NVENC or CPU fallback. Full input injection, bidirectional clipboard, PulseAudio/PipeWire audio. Optional headless mode with its own Xorg + GNOME Shell stack.
+**[Linux](ARCHITECTURE_LINUX.md)** — Captures X11 via MIT-SHM by default, with optional experimental NvFBC (zero-copy GPU) via `--experimental-nvfbc`. Encodes with NVENC or CPU fallback. Full input injection, bidirectional clipboard, PulseAudio/PipeWire audio. Optional headless mode with its own Xorg + GNOME Shell stack.
 
 **[macOS](ARCHITECTURE_MACOS.md)** — Captures via ScreenCaptureKit, encodes with VideoToolbox. Desktop mode captures the host screen. VM mode (`--vm`) runs a full macOS VM via Virtualization.framework with Metal GPU — a WebRTC-based macOS terminal server.
 

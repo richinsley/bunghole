@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	flagStartX     = flag.Bool("start-x", false, "Start a new Xorg server with nvidia driver")
-	flagResolution = flag.String("resolution", "1920x1080", "Screen resolution when starting X server")
+	flagStartX            = flag.Bool("start-x", false, "Start a new Xorg server with nvidia driver")
+	flagResolution        = flag.String("resolution", "1920x1080", "Screen resolution when starting X server")
+	flagExperimentalNvFBC = flag.Bool("experimental-nvfbc", false, "Enable experimental NvFBC capture path (Linux/NVIDIA only)")
 )
 
 func registerPlatformFlags() {
@@ -26,6 +27,7 @@ func registerPlatformFlags() {
 func fillPlatformConfig(cfg *platform.Config) {
 	cfg.StartX = *flagStartX
 	cfg.Resolution = *flagResolution
+	capture.SetExperimentalNvFBC(*flagExperimentalNvFBC)
 }
 
 func newCapturer(display string, fps, gpu int) (types.MediaCapturer, error) {

@@ -6,22 +6,28 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
+	"time"
 
 	"bunghole/internal/platform"
 	"bunghole/internal/server"
 )
 
 var (
-	flagDisplay = flag.String("display", "", "X11 display to capture (auto-detected or started if empty)")
-	flagAddr    = flag.String("addr", ":8080", "HTTP listen address")
-	flagToken   = flag.String("token", "", "Bearer token for authentication (required)")
-	flagFPS     = flag.Int("fps", 30, "Capture frame rate")
-	flagBitrate = flag.Int("bitrate", 4000, "Video bitrate in kbps")
-	flagGPU     = flag.Int("gpu", 0, "GPU index for Xorg (0=first, 1=second)")
-	flagCodec   = flag.String("codec", "h264", "Video codec (h264 or h265)")
-	flagGOP     = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
-	flagStats   = flag.Bool("stats", false, "Log pipeline stats every 5 seconds")
+	flagDisplay        = flag.String("display", "", "X11 display to capture (auto-detected or started if empty)")
+	flagAddr           = flag.String("addr", "127.0.0.1:8080", "HTTP listen address")
+	flagToken          = flag.String("token", "", "Bearer token for authentication (required)")
+	flagFPS            = flag.Int("fps", 30, "Capture frame rate")
+	flagBitrate        = flag.Int("bitrate", 4000, "Video bitrate in kbps")
+	flagGPU            = flag.Int("gpu", 0, "GPU index for Xorg (0=first, 1=second)")
+	flagCodec          = flag.String("codec", "h264", "Video codec (h264 or h265)")
+	flagGOP            = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
+	flagStats          = flag.Bool("stats", false, "Log pipeline stats every 5 seconds")
+	flagOfferTimeout   = flag.Duration("offer-timeout", 10*time.Second, "Timeout for WHEP offer processing and ICE gathering")
+	flagAllowOrigins   = flag.String("allow-origins", "", "Comma-separated CORS allowlist (in addition to same-origin). Empty = same-origin only")
+	flagAuthFailLimit  = flag.Int("auth-fail-limit", 10, "Max failed auth attempts per client IP per window")
+	flagAuthFailWindow = flag.Duration("auth-fail-window", time.Minute, "Window for auth failure rate limiting")
 )
 
 func main() {
@@ -29,8 +35,8 @@ func main() {
 	flag.Parse()
 
 	cfg := &platform.Config{
-		Display:    *flagDisplay,
-		GPU:        *flagGPU,
+		Display: *flagDisplay,
+		GPU:     *flagGPU,
 	}
 	fillPlatformConfig(cfg)
 
@@ -58,6 +64,9 @@ func runServer(cfg *platform.Config) {
 	if *flagToken == "" {
 		log.Fatal("--token is required")
 	}
+	if *flagFPS <= 0 {
+		log.Fatal("--fps must be > 0")
+	}
 
 	platform.SaveTermState()
 
@@ -79,6 +88,14 @@ func runServer(cfg *platform.Config) {
 		log.Fatalf("--codec must be h264 or h265, got %q", codec)
 	}
 
+	var allowedOrigins []string
+	for _, o := range strings.Split(*flagAllowOrigins, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allowedOrigins = append(allowedOrigins, o)
+		}
+	}
+
 	srv := server.New(server.Config{
 		Display: cfg.Display,
 		Token:   *flagToken,
@@ -89,6 +106,11 @@ func runServer(cfg *platform.Config) {
 		GOP:     *flagGOP,
 		Addr:    *flagAddr,
 		Stats:   *flagStats,
+
+		OfferTimeout:   *flagOfferTimeout,
+		AllowedOrigins: allowedOrigins,
+		AuthFailLimit:  *flagAuthFailLimit,
+		AuthFailWindow: *flagAuthFailWindow,
 
 		NewCapturer:  newCapturer,
 		NewEncoder:   newEncoder,

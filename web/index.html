@@ -131,7 +131,7 @@ body {
 <body>
 
 <div id="login">
-  <img src="/web/bunghole.png" alt="bunghole" style="width: 120px; height: auto;">
+  <img src="/bunghole.png" alt="bunghole" style="width: 120px; height: auto;">
   <h1>bunghole</h1>
   <form id="login-form">
     <input type="password" id="token-input" placeholder="access token" autofocus>
@@ -160,6 +160,7 @@ let sessionUrl = null;
 let inputDC = null;
 let clipboardDC = null;
 let inputFocused = false;
+let inputHandlersBound = false;
 let videoEl, viewportEl, cursorDot;
 let serverMode = 'desktop'; // 'desktop' or 'vm'
 
@@ -319,6 +320,9 @@ function disconnect() {
   clipboardDC = null;
   inputFocused = false;
 
+  if (videoEl) videoEl.classList.remove('active');
+  if (cursorDot) cursorDot.style.display = 'none';
+
   document.getElementById('viewport').style.display = 'none';
   loginEl.style.display = 'flex';
   setStatus('', 'disconnected');
@@ -355,17 +359,20 @@ function setupInputHandlers() {
   videoEl = document.getElementById('video');
   cursorDot = document.getElementById('cursor-dot');
 
-  const isVM = serverMode === 'vm';
+  if (inputHandlersBound) return;
+  inputHandlersBound = true;
+
+  const isVM = () => serverMode === 'vm';
 
   // Click video to focus input; click outside to blur
   videoEl.addEventListener('mousedown', (e) => {
     if (!inputFocused) {
       inputFocused = true;
       videoEl.classList.add('active');
-      if (isVM) cursorDot.style.display = 'block';
+      if (isVM()) cursorDot.style.display = 'block';
     }
     e.preventDefault();
-    if (isVM) {
+    if (isVM()) {
       cursorDot.style.left = e.clientX + 'px';
       cursorDot.style.top = e.clientY + 'px';
     }
@@ -377,7 +384,7 @@ function setupInputHandlers() {
     if (inputFocused && e.target !== videoEl && !videoEl.contains(e.target)) {
       inputFocused = false;
       videoEl.classList.remove('active');
-      if (isVM) cursorDot.style.display = 'none';
+      if (isVM()) cursorDot.style.display = 'none';
     }
   });
 
@@ -390,7 +397,7 @@ function setupInputHandlers() {
 
   videoEl.addEventListener('mousemove', (e) => {
     if (!inputFocused) return;
-    if (isVM) {
+    if (isVM()) {
       cursorDot.style.left = e.clientX + 'px';
       cursorDot.style.top = e.clientY + 'px';
     }
@@ -399,11 +406,11 @@ function setupInputHandlers() {
   });
 
   videoEl.addEventListener('mouseleave', () => {
-    if (isVM) cursorDot.style.display = 'none';
+    if (isVM()) cursorDot.style.display = 'none';
   });
 
   videoEl.addEventListener('mouseenter', () => {
-    if (isVM && inputFocused) cursorDot.style.display = 'block';
+    if (isVM() && inputFocused) cursorDot.style.display = 'block';
   });
 
   // Scroll
@@ -422,7 +429,7 @@ function setupInputHandlers() {
     if (e.code === 'Escape') {
       inputFocused = false;
       videoEl.classList.remove('active');
-      if (isVM) cursorDot.style.display = 'none';
+      if (isVM()) cursorDot.style.display = 'none';
       return;
     }
     e.preventDefault();
