@@ -163,6 +163,7 @@ let inputFocused = false;
 let inputHandlersBound = false;
 let videoEl, viewportEl, cursorDot;
 let config = null;
+let pressedKeys = new Map(); // code -> key
 const isMacHost = /Mac|iPhone|iPad/.test(navigator.platform);
 
 const loginEl = document.getElementById('login');
@@ -225,11 +226,22 @@ async function connect() {
 
   // Set up video/audio
   pc.ontrack = (e) => {
+    console.log('bunghole: remote track', e.track.kind, e.track.id);
+
     if (e.track.kind === 'video') {
       videoEl = document.getElementById('video');
       videoEl.srcObject = e.streams[0];
+      return;
     }
-    // Audio tracks are auto-attached to the stream
+
+    // For audio, rely on the same remote stream model as Linux.
+    // If audio arrives first/alone, attach its stream so video/audio share one element later.
+    if (e.track.kind === 'audio') {
+      videoEl = document.getElementById('video');
+      if (!videoEl.srcObject && e.streams && e.streams[0]) {
+        videoEl.srcObject = e.streams[0];
+      }
+    }
   };
 
   pc.onconnectionstatechange = () => {
@@ -240,6 +252,7 @@ async function connect() {
         viewportEl = document.getElementById('viewport');
         viewportEl.style.display = 'block';
         setupInputHandlers();
+        if (videoEl) videoEl.play().catch(() => {});
         break;
       case 'disconnected':
       case 'failed':
@@ -307,6 +320,9 @@ async function connect() {
 }
 
 function disconnect() {
+  // Best-effort release of held modifiers/keys before teardown.
+  releasePressedKeys();
+
   if (sessionUrl) {
     fetch(sessionUrl, {
       method: 'DELETE',
@@ -322,7 +338,10 @@ function disconnect() {
   clipboardDC = null;
   inputFocused = false;
 
-  if (videoEl) videoEl.classList.remove('active');
+  if (videoEl) {
+    videoEl.classList.remove('active');
+    videoEl.srcObject = null;
+  }
   if (cursorDot) cursorDot.style.display = 'none';
 
   document.getElementById('viewport').style.display = 'none';
@@ -334,6 +353,14 @@ function sendInput(msg) {
   if (inputDC && inputDC.readyState === 'open') {
     inputDC.send(JSON.stringify(msg));
   }
+}
+
+function releasePressedKeys() {
+  if (!pressedKeys.size) return;
+  for (const [code, key] of pressedKeys.entries()) {
+    sendInput({ type: 'keyup', key: key || '', code });
+  }
+  pressedKeys.clear();
 }
 
 // Map browser mouse position to remote desktop coordinates
@@ -392,6 +419,7 @@ function setupInputHandlers() {
 
   document.addEventListener('mousedown', (e) => {
     if (inputFocused && e.target !== videoEl && !videoEl.contains(e.target)) {
+      releasePressedKeys();
       inputFocused = false;
       videoEl.classList.remove('active');
       if (showCursorDot()) cursorDot.style.display = 'none';
@@ -440,6 +468,7 @@ function setupInputHandlers() {
     if (!inputFocused) return;
     // Allow Escape to release focus
     if (e.code === 'Escape') {
+      releasePressedKeys();
       inputFocused = false;
       videoEl.classList.remove('active');
       if (showCursorDot()) cursorDot.style.display = 'none';
@@ -467,6 +496,7 @@ function setupInputHandlers() {
 
     e.preventDefault();
     const mapped = remapKey(e.key, e.code);
+    pressedKeys.set(mapped.code, mapped.key);
     sendInput({ type: 'keydown', key: mapped.key, code: mapped.code });
   });
 
@@ -478,12 +508,21 @@ function setupInputHandlers() {
       return;
     }
     const mapped = remapKey(e.key, e.code);
+    pressedKeys.delete(mapped.code);
     sendInput({ type: 'keyup', key: mapped.key, code: mapped.code });
   });
 
   // Prevent context menu
   videoEl.addEventListener('contextmenu', (e) => {
     if (inputFocused) e.preventDefault();
+  });
+
+  window.addEventListener('blur', () => {
+    if (inputFocused) releasePressedKeys();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && inputFocused) releasePressedKeys();
   });
 }
 </script>

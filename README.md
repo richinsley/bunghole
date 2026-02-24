@@ -10,13 +10,13 @@ Remote desktop streaming over WebRTC. Captures a display, encodes with hardware-
 
 **[Linux](ARCHITECTURE_LINUX.md)** — Captures X11 via MIT-SHM by default, with optional experimental NvFBC (zero-copy GPU) via `--experimental-nvfbc`. Encodes with NVENC or CPU fallback. Full input injection, bidirectional clipboard, PulseAudio/PipeWire audio. Optional headless mode with its own Xorg + GNOME Shell stack.
 
-**[macOS](ARCHITECTURE_MACOS.md)** — Captures via ScreenCaptureKit, encodes with VideoToolbox. Desktop mode captures the host screen. VM mode (`--vm`) runs a full macOS VM via Virtualization.framework with Metal GPU — a WebRTC-based macOS terminal server.
+**[macOS](ARCHITECTURE_MACOS.md)** — Captures via ScreenCaptureKit, encodes with VideoToolbox. Desktop mode captures the host screen. VM mode (`--vm`) runs a full macOS VM via Virtualization.framework with Metal GPU — a WebRTC-based macOS terminal server. VM audio setup/troubleshooting: **[MACOS_VM_AUDIO.md](MACOS_VM_AUDIO.md)**.
 
 ## Features
 
 - **Low-latency video** via hardware encoding (NVENC on Linux, VideoToolbox on macOS)
 - **H.264 and H.265** codec support
-- **Opus audio** capture (Linux — PulseAudio/PipeWire)
+- **Opus audio** capture (Linux: PulseAudio/PipeWire, macOS: ScreenCaptureKit)
 - **Full input** — mouse, keyboard, scroll
 - **Clipboard sync** — bidirectional copy/paste (requires HTTPS for non-localhost connections)
 - **Viewer streams** — multiple simultaneous view-only connections
@@ -28,7 +28,8 @@ Remote desktop streaming over WebRTC. Captures a display, encodes with hardware-
 
 ```
 # Build
-mkdir build && cd build && cmake .. && make
+cmake -S . -B build
+cmake --build build
 
 # Run (Linux — capture existing display)
 bunghole --token SECRET --display :0
@@ -36,6 +37,8 @@ bunghole --token SECRET --display :0
 # Run (macOS — capture host desktop)
 bunghole --token SECRET
 ```
+
+On macOS, the default CMake build auto-codesigns `build/bunghole` for VM mode (see `ARCHITECTURE_MACOS.md` for options).
 
 Open `http://<host>:8080` in a browser, enter the token, and connect. Click the video to focus input; press Escape to release.
 

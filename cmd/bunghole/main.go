@@ -26,6 +26,7 @@ var (
 	flagCodec          = flag.String("codec", "h264", "Video codec (h264 or h265)")
 	flagGOP            = flag.Int("gop", 0, "Keyframe interval in frames (0 = 2x FPS)")
 	flagStats          = flag.Bool("stats", false, "Log pipeline stats every 5 seconds")
+	flagAudioUDPListen = flag.String("audio-udp-listen", "", "Listen address for external Opus packets (e.g. guest agent), example :18080")
 	flagOfferTimeout   = flag.Duration("offer-timeout", 10*time.Second, "Timeout for WHEP offer processing and ICE gathering")
 	flagAllowOrigins   = flag.String("allow-origins", "", "Comma-separated CORS allowlist (in addition to same-origin). Empty = same-origin only")
 	flagAuthFailLimit  = flag.Int("auth-fail-limit", 10, "Max failed auth attempts per client IP per window")
@@ -56,7 +57,10 @@ func main() {
 		return
 	}
 
-	if platform.IsVMMode() {
+	// VM mode needs NSApplication RunLoop on the main OS thread.
+	// We must branch on requested config (cfg.VM), not runtime VM state,
+	// because global VM state is only set during platform.Init() in runServer.
+	if cfg.VM {
 		runtime.LockOSThread()
 		go runServer(cfg)
 		platform.VMNSAppRun()
@@ -121,15 +125,16 @@ func runServer(cfg *platform.Config) {
 	}
 
 	srv := server.New(server.Config{
-		Display: cfg.Display,
-		Token:   *flagToken,
-		FPS:     *flagFPS,
-		Bitrate: *flagBitrate,
-		GPU:     *flagGPU,
-		Codec:   codec,
-		GOP:     *flagGOP,
-		Addr:    *flagAddr,
-		Stats:   *flagStats,
+		Display:        cfg.Display,
+		Token:          *flagToken,
+		FPS:            *flagFPS,
+		Bitrate:        *flagBitrate,
+		GPU:            *flagGPU,
+		Codec:          codec,
+		GOP:            *flagGOP,
+		Addr:           *flagAddr,
+		Stats:          *flagStats,
+		AudioUDPListen: *flagAudioUDPListen,
 
 		OfferTimeout:   *flagOfferTimeout,
 		AllowedOrigins: allowedOrigins,

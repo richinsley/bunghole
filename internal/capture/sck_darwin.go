@@ -17,7 +17,7 @@ typedef struct {
 } SCKCaptureHandle;
 
 int  sck_capture_start_display(int fps, SCKCaptureHandle *out);
-int  sck_capture_start_window(void *nswindow, int fps, int w, int h, SCKCaptureHandle *out);
+int  sck_capture_start_window(uint32_t window_id, int fps, int w, int h, SCKCaptureHandle *out);
 int  sck_capture_grab(SCKCaptureHandle *h, uint8_t **buf, int *stride, int *w, int *h_out);
 void sck_capture_stop(SCKCaptureHandle *h);
 */
@@ -73,9 +73,12 @@ type WindowCapturer struct {
 }
 
 // NewWindowCapturer creates a ScreenCaptureKit window capturer.
-func NewWindowCapturer(window unsafe.Pointer, fps, w, h int) (types.MediaCapturer, error) {
+func NewWindowCapturer(windowID uint32, fps, w, h int) (types.MediaCapturer, error) {
+	if windowID == 0 {
+		return nil, fmt.Errorf("invalid window id")
+	}
 	var handle C.SCKCaptureHandle
-	if ret := C.sck_capture_start_window(window, C.int(fps), C.int(w), C.int(h), &handle); ret != 0 {
+	if ret := C.sck_capture_start_window(C.uint32_t(windowID), C.int(fps), C.int(w), C.int(h), &handle); ret != 0 {
 		return nil, fmt.Errorf("ScreenCaptureKit window capture failed")
 	}
 	return &WindowCapturer{

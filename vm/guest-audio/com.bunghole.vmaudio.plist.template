@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bunghole.vmaudio</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROGRAM_PATH__</string>
+        <string>--stats=true</string>
+        <string>--stats-interval=__STATS_INTERVAL__</string>
+__UDP_ARG_LINE__
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Avoid rapid permission/error prompt loops; launcher can be kickstarted manually. -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+    </array>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>__STDOUT_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__STDERR_PATH__</string>
+</dict>
+</plist>

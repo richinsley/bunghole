@@ -34,7 +34,7 @@ func fillPlatformConfig(cfg *platform.Config) {
 func newCapturer(display string, fps, gpu int) (types.MediaCapturer, error) {
 	if display == "vm" {
 		if g := vm.GetGlobal(); g != nil {
-			return vm.NewVMCapturer(g.Window(), fps, g.Width, g.Height)
+			return vm.NewVMCapturer(g.WindowID, fps, g.Width, g.Height)
 		}
 	}
 	return capture.NewCapturer(display, fps, gpu)

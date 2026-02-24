@@ -11,20 +11,45 @@
 
 ### cmake (recommended)
 
-```
-mkdir build && cd build
-cmake ..
-make
-```
-
-### go build
+On macOS, the CMake build **automatically codesigns** `build/bunghole` with virtualization entitlements by default.
 
 ```
-go build -o bunghole ./cmd/bunghole
+cmake -S . -B build
+cmake --build build
+```
+
+Codesign-related CMake options (macOS):
+
+- `-DBUNGHOLE_CODESIGN=ON|OFF` (default `ON`)
+- `-DBUNGHOLE_CODESIGN_IDENTITY="-"` (default ad-hoc signing)
+- `-DBUNGHOLE_ENTITLEMENTS=/path/to/entitlements.plist` (default `entitlements.plist` in repo root)
+
+Examples:
+
+```
+# Disable codesigning
+cmake -S . -B build -DBUNGHOLE_CODESIGN=OFF
+
+# Use a specific signing identity
+cmake -S . -B build -DBUNGHOLE_CODESIGN_IDENTITY="Developer ID Application: Example Corp"
+```
+
+Verify entitlements on the built binary:
+
+```
+codesign -d --entitlements - ./build/bunghole
+```
+
+### go build (manual)
+
+If building without CMake, you must codesign manually for VM mode:
+
+```
+go build -tags nolibopusfile -o bunghole ./cmd/bunghole
 codesign --force --sign - --entitlements entitlements.plist ./bunghole
 ```
 
-The codesign step is required for VM mode (`com.apple.security.virtualization` entitlement). Desktop mode works without it.
+The virtualization entitlement (`com.apple.security.virtualization`) is required for VM mode. Desktop mode works without it.
 
 ## Usage
 
@@ -64,7 +89,7 @@ bunghole --token mysecret --codec h265 --bitrate 8000
 
 First-time VM setup (interactive — shows the macOS setup assistant window):
 ```
-bunghole setup --disk 64
+bunghole --disk 64 setup
 ```
 
 Stream a macOS VM desktop:
@@ -127,7 +152,7 @@ Browser (WebRTC)
     │                         (main display)    (VZVirtualMachineView
     │                                            NSWindow capture)
     │
-    ├── audio track ◄──── (not yet implemented on macOS)
+    ├── audio track ◄──── Opus ◄──── ScreenCaptureKit audio capture
     ├── input DC ──────►  InputHandler / VMInputHandler
     └── clipboard DC ◄►  ClipboardHandler (desktop mode only)
 ```
@@ -214,6 +239,16 @@ Uses the same ScreenCaptureKit infrastructure as desktop mode, but with a window
 
 A white cursor dot is rendered in the browser as a substitute (see Web Client section).
 
+### Audio Capture
+
+Uses ScreenCaptureKit audio stream output (`SCStreamOutputTypeAudio`) with 48 kHz stereo PCM, encoded to Opus in 20 ms packets (960 samples/channel), then written to the shared WebRTC audio track.
+
+Source selection:
+- VM mode: attempts VM NSWindow capture first (`SCContentFilter(desktopIndependentWindow:)`) so guest audio is prioritized
+- Fallback: main display capture if VM-window audio stream init fails
+
+Audio init failures are non-fatal. The server logs the error and continues video-only streaming.
+
 ### VM Input Injection
 
 Synthesizes NSEvents and forwards them to VZVirtualMachineView's responder methods:
@@ -223,6 +258,43 @@ Synthesizes NSEvents and forwards them to VZVirtualMachineView's responder metho
 - **Keyboard**: `[NSEvent keyEventWithType:...]` forwarded to `[vmView keyDown:]` / `[vmView keyUp:]`
 
 All calls dispatched to the main thread via `dispatch_async(dispatch_get_main_queue(), ...)`. Coordinates are converted from top-left (web) to bottom-left (AppKit) origin.
+
+### Guest Audio Agent Bootstrap (VM)
+
+For full setup + troubleshooting runbook, see **[`MACOS_VM_AUDIO.md`](MACOS_VM_AUDIO.md)**.
+
+To capture guest-side audio reliably, bunghole includes a small guest LaunchAgent (`bunghole-vm-audio`) that captures ScreenCaptureKit audio in the guest and can forward Opus packets over UDP.
+
+Stage agent files from the host into the shared directory (uses the CMake `bunghole-vm-audio` target if needed):
+
+```bash
+./scripts/vm-audio-stage.sh --vm-share "$HOME" --udp-target 192.168.0.109:18080
+```
+
+Start bunghole on the host with UDP ingest enabled (example port `18080`):
+
+```bash
+bunghole --vm --token mysecret --audio-udp-listen :18080 --vm-share "$HOME"
+```
+
+Inside the guest (VirtioFS mount):
+
+```bash
+cd "/Volumes/My Shared Files/.bunghole-vm-audio"
+./install.sh
+```
+
+Install behavior:
+- If `udp_target.txt` is staged, `install.sh` uses that automatically (no typing needed in guest).
+- Otherwise, `install.sh` falls back to `default-gateway:18080` in the guest.
+- `install.sh` runs a one-shot ScreenCaptureKit permission probe before starting the LaunchAgent. If permission is not ready, install exits with guidance (prevents prompt loops).
+
+Optional install-time env vars:
+- `BUNGHOLE_VM_AUDIO_UDP` — override UDP destination (`host:port`) for raw Opus datagrams
+- `BUNGHOLE_VM_AUDIO_STATS_INTERVAL` — stats interval (default `5s`)
+- `BUNGHOLE_VM_AUDIO_SKIP_PROBE=1` — skip permission probe (not recommended)
+
+On first run in the guest, macOS may prompt for **Screen Recording** permission for `bunghole-vm-audio`; allow it or audio capture will fail.
 
 ## Shared Components
 
@@ -250,7 +322,12 @@ Branches on display mode:
 - Desktop: `NewCapturer()` → `sck_capture_start_display()`
 - VM: `NewVMCapturer()` → `sck_capture_start_window()`
 
-The rest of the pipeline (encode → write to shared WebRTC tracks) is identical.
+Audio runs in parallel:
+- Default: `audio.NewAudioCapture()` initializes a ScreenCaptureKit audio stream
+- Optional VM guest-agent path: `--audio-udp-listen` uses UDP Opus ingest from the guest (`bunghole-vm-audio`)
+- Opus packets are written to `audioTrack.WriteSample()`
+
+If audio init fails, video capture/encode continues unchanged.
 
 ### HTTP Endpoints
 
@@ -286,7 +363,7 @@ Common behavior:
 ## Dependencies
 
 **cgo / system frameworks:**
-- `ScreenCaptureKit`, `CoreMedia`, `CoreVideo` — display/window capture
+- `ScreenCaptureKit`, `CoreMedia`, `CoreVideo`, `CoreAudio` — display/window capture + system audio capture
 - `CoreGraphics` — input injection (desktop mode)
 - `Cocoa` — NSPasteboard, NSEvent, NSWindow
 - `Virtualization` — macOS VM (VM mode only)
@@ -298,7 +375,8 @@ Common behavior:
 
 ## Known Limitations
 
-- **Audio**: Not yet implemented on macOS
+- **Audio permissions/content**: Requires Screen Recording permission; protected/DRM content and some app-specific audio routes may not be capturable by ScreenCaptureKit
+- **VM audio source**: VM window audio is attempted first in `--vm` mode, but falls back to display audio if window-audio stream init fails
 - **VM cursor shapes**: Guest cursor is a hardware overlay inaccessible via public API; white dot serves as substitute
 - **VM clipboard**: Requires a guest agent (not yet implemented)
 - **VM resolution**: Hardcoded 1920x1080

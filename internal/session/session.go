@@ -139,6 +139,10 @@ func NewSession(id, displayName, codec string, videoTrack, audioTrack *webrtc.Tr
 					log.Printf("clipboard handler init failed: %v", err)
 					return
 				}
+				if ch == nil {
+					log.Printf("clipboard handler disabled for display=%s", displayName)
+					return
+				}
 				sess.mu.Lock()
 				sess.ClipboardHandler = ch
 				sess.mu.Unlock()

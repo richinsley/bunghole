@@ -9,12 +9,22 @@
 static int _vm_buttons_down = 0;  // bitmask of held buttons
 
 
-void vm_input_key(void *view, int keycode, int press) {
+void vm_input_key(void *view, int keycode, int press, const char *chars) {
     dispatch_async(dispatch_get_main_queue(), ^{
         @autoreleasepool {
             VZVirtualMachineView *vmView = (__bridge VZVirtualMachineView *)view;
             NSWindow *window = vmView.window;
             if (!window) return;
+
+            // Ensure VM view is the key responder for keyboard delivery.
+            [window makeFirstResponder:vmView];
+            [window makeKeyWindow];
+
+            NSString *characters = @"";
+            if (chars && chars[0] != '\0') {
+                characters = [NSString stringWithUTF8String:chars];
+                if (!characters) characters = @"";
+            }
 
             NSEventType type = press ? NSEventTypeKeyDown : NSEventTypeKeyUp;
             NSEvent *event = [NSEvent keyEventWithType:type
@@ -23,8 +33,8 @@ void vm_input_key(void *view, int keycode, int press) {
                 timestamp:[[NSProcessInfo processInfo] systemUptime]
                 windowNumber:[window windowNumber]
                 context:nil
-                characters:@""
-                charactersIgnoringModifiers:@""
+                characters:characters
+                charactersIgnoringModifiers:characters
                 isARepeat:NO
                 keyCode:(unsigned short)keycode];
 

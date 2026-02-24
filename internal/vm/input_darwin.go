@@ -5,7 +5,9 @@ package vm
 /*
 #cgo LDFLAGS: -framework Cocoa -framework Virtualization
 
-void vm_input_key(void *view, int keycode, int press);
+#include <stdlib.h>
+
+void vm_input_key(void *view, int keycode, int press, const char *chars);
 void vm_input_mouse_move(void *view, double x, double y);
 void vm_input_mouse_button(void *view, int button, int press, double x, double y);
 void vm_input_scroll(void *view, double dx, double dy, double x, double y);
@@ -49,13 +51,17 @@ func (h *VMInputHandler) Inject(event types.InputEvent) {
 			C.double(h.lastX), C.double(h.lastY))
 	case "keydown":
 		if kc, ok := input.CodeMap[event.Code]; ok {
-			C.vm_input_key(h.view, C.int(kc), C.int(1))
+			cChars := C.CString(event.Key)
+			C.vm_input_key(h.view, C.int(kc), C.int(1), cChars)
+			C.free(unsafe.Pointer(cChars))
 		} else {
 			log.Printf("vm input: unmapped key code=%s key=%s", event.Code, event.Key)
 		}
 	case "keyup":
 		if kc, ok := input.CodeMap[event.Code]; ok {
-			C.vm_input_key(h.view, C.int(kc), C.int(0))
+			cChars := C.CString(event.Key)
+			C.vm_input_key(h.view, C.int(kc), C.int(0), cChars)
+			C.free(unsafe.Pointer(cChars))
 		}
 	}
 }

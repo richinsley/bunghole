@@ -5,6 +5,7 @@
 #import <Cocoa/Cocoa.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <pthread.h>
 
 typedef struct {
@@ -183,41 +184,60 @@ int sck_capture_start_display(int fps, SCKCaptureHandle *out) {
 
 // ---- VM window capture ----
 
-int sck_capture_start_window(void *nswindow, int fps, int w, int h, SCKCaptureHandle *out) {
+int sck_capture_start_window(uint32_t windowID, int fps, int w, int h, SCKCaptureHandle *out) {
     @autoreleasepool {
         memset(out, 0, sizeof(SCKCaptureHandle));
 
-        NSWindow *window = (__bridge NSWindow *)nswindow;
-        CGWindowID windowID = (CGWindowID)[window windowNumber];
-
-        __block SCWindow *targetWindow = nil;
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-
-        [SCShareableContent getShareableContentWithCompletionHandler:
-            ^(SCShareableContent *content, NSError *error) {
-                if (error) {
-                    NSLog(@"sck_capture_start_window: error: %@", error);
-                    dispatch_semaphore_signal(sem);
-                    return;
-                }
-                for (SCWindow *win in content.windows) {
-                    if (win.windowID == windowID) {
-                        targetWindow = win;
-                        break;
-                    }
-                }
-                dispatch_semaphore_signal(sem);
-            }];
-
-        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-
-        if (!targetWindow) {
-            NSLog(@"sck_capture_start_window: window %u not found", windowID);
+        if (windowID == 0) {
+            NSLog(@"sck_capture_start_window: invalid window id");
             return -1;
         }
 
-        SCContentFilter *filter = [[SCContentFilter alloc]
-            initWithDesktopIndependentWindow:targetWindow];
+        __block SCContentFilter *filter = nil;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+
+        void (^lookupBlock)(void) = ^{
+            [SCShareableContent getShareableContentWithCompletionHandler:
+                ^(SCShareableContent *content, NSError *error) {
+                    if (error) {
+                        NSLog(@"sck_capture_start_window: error: %@", error);
+                        dispatch_semaphore_signal(sem);
+                        return;
+                    }
+
+                    SCWindow *targetWindow = nil;
+                    for (SCWindow *win in content.windows) {
+                        if (win.windowID == windowID) {
+                            targetWindow = win;
+                            break;
+                        }
+                    }
+
+                    if (!targetWindow) {
+                        NSLog(@"sck_capture_start_window: window %u not found", windowID);
+                        dispatch_semaphore_signal(sem);
+                        return;
+                    }
+
+                    filter = [[SCContentFilter alloc] initWithDesktopIndependentWindow:targetWindow];
+                    dispatch_semaphore_signal(sem);
+                }];
+        };
+
+        if ([NSThread isMainThread]) {
+            lookupBlock();
+        } else {
+            dispatch_async(dispatch_get_main_queue(), lookupBlock);
+        }
+
+        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) != 0) {
+            NSLog(@"sck_capture_start_window: timed out waiting for shareable content");
+            return -1;
+        }
+
+        if (!filter) {
+            return -1;
+        }
 
         int ret = sck_start_stream(filter, fps, w, h, out);
         if (ret == 0) {

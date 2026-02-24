@@ -4,6 +4,7 @@
 #import <Cocoa/Cocoa.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <sys/sysctl.h>
 #include <sys/fcntl.h>
 #include <unistd.h>
@@ -18,6 +19,7 @@ typedef struct {
     void *delegate; // VMDelegate*
     int width;
     int height;
+    uint32_t windowID;
 } VMHandle;
 
 // ---- VM Delegate ----
@@ -297,6 +299,7 @@ int vm_create(const char *bundle_path, const char *shared_dir,
         out->delegate = (void *)CFBridgingRetain(delegate);
         out->width = width;
         out->height = height;
+        out->windowID = (uint32_t)[window windowNumber];
 
         NSLog(@"vm_create: VM created (%d CPUs, %llu MB RAM, %dx%d)",
               cpuCount, ramBytes / (1024*1024), width, height);
@@ -413,6 +416,10 @@ void* vm_get_window(VMHandle *h) {
 
 void* vm_get_view(VMHandle *h) {
     return h ? h->view : NULL;
+}
+
+uint32_t vm_get_window_id(VMHandle *h) {
+    return h ? h->windowID : 0;
 }
 
 // ---- Setup / Install ----

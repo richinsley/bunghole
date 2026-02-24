@@ -16,6 +16,7 @@ typedef struct {
 	void *delegate;
 	int width;
 	int height;
+	uint32_t windowID;
 } VMHandle;
 
 void vm_nsapp_run(void);
@@ -25,8 +26,8 @@ int  vm_create(const char *bundle_path, const char *shared_dir,
 int  vm_start(VMHandle *h);
 void vm_stop(VMHandle *h);
 void vm_destroy(VMHandle *h);
-void* vm_get_window(VMHandle *h);
 void* vm_get_view(VMHandle *h);
+uint32_t vm_get_window_id(VMHandle *h);
 
 int vm_fetch_restore_url(char **out_url, uint64_t *out_size);
 int vm_download_ipsw(const char *url, const char *dest,
@@ -49,10 +50,10 @@ var globalVM *VMManager
 type VMManager struct {
 	handle     C.VMHandle
 	bundlePath string
-	window     unsafe.Pointer
 	view       unsafe.Pointer
 	Width      int
 	Height     int
+	WindowID   uint32
 }
 
 func SetGlobal(vm *VMManager) { globalVM = vm }
@@ -76,10 +77,10 @@ func NewVMManager(bundlePath, sharedDir string, w, h int) (*VMManager, error) {
 	return &VMManager{
 		handle:     handle,
 		bundlePath: bundlePath,
-		window:     unsafe.Pointer(C.vm_get_window(&handle)),
 		view:       unsafe.Pointer(C.vm_get_view(&handle)),
 		Width:      w,
 		Height:     h,
+		WindowID:   uint32(C.vm_get_window_id(&handle)),
 	}, nil
 }
 
@@ -96,8 +97,7 @@ func (vm *VMManager) Stop() {
 	C.vm_destroy(&vm.handle)
 }
 
-func (vm *VMManager) Window() unsafe.Pointer { return vm.window }
-func (vm *VMManager) View() unsafe.Pointer   { return vm.view }
+func (vm *VMManager) View() unsafe.Pointer { return vm.view }
 
 func BundlePath() string {
 	home, _ := os.UserHomeDir()

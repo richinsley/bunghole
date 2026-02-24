@@ -34,15 +34,16 @@ type EncoderFactory func(width, height, fps, bitrateKbps, gpu int, codec string,
 
 // Config holds all server configuration.
 type Config struct {
-	Display string
-	Token   string
-	FPS     int
-	Bitrate int
-	GPU     int
-	Codec   string
-	GOP     int
-	Addr    string
-	Stats   bool
+	Display        string
+	Token          string
+	FPS            int
+	Bitrate        int
+	GPU            int
+	Codec          string
+	GOP            int
+	Addr           string
+	Stats          bool
+	AudioUDPListen string
 
 	OfferTimeout   time.Duration
 	AllowedOrigins []string
@@ -774,7 +775,18 @@ func (s *Server) runPipeline(cap types.MediaCapturer, enc types.VideoEncoder, vi
 	}()
 
 	// Start audio capture (non-fatal if it fails)
-	ac, err := audio.NewAudioCapture()
+	var (
+		ac  types.AudioCapturer
+		err error
+	)
+	if s.cfg.AudioUDPListen != "" {
+		ac, err = audio.NewUDPAudioCapture(s.cfg.AudioUDPListen)
+		if err == nil {
+			log.Printf("audio: source=guest-udp listen=%s", s.cfg.AudioUDPListen)
+		}
+	} else {
+		ac, err = audio.NewAudioCapture()
+	}
 	if err != nil {
 		log.Printf("audio capture init failed (continuing without audio): %v", err)
 	} else {
