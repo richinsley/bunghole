@@ -29,6 +29,7 @@ var (
 	flagAudioUDPListen = flag.String("audio-udp-listen", "", "Listen address for external Opus packets (e.g. guest agent), example :18080")
 	flagOfferTimeout   = flag.Duration("offer-timeout", 10*time.Second, "Timeout for WHEP offer processing and ICE gathering")
 	flagAllowOrigins   = flag.String("allow-origins", "", "Comma-separated CORS allowlist (in addition to same-origin). Empty = same-origin only")
+	flagResolution     = flag.String("resolution", "1920x1080", "Display resolution (WxH)")
 	flagAuthFailLimit  = flag.Int("auth-fail-limit", 10, "Max failed auth attempts per client IP per window")
 	flagAuthFailWindow = flag.Duration("auth-fail-window", time.Minute, "Window for auth failure rate limiting")
 	flagTLS            = flag.Bool("tls", false, "Enable TLS with auto-generated self-signed certificate")
@@ -41,8 +42,9 @@ func main() {
 	flag.Parse()
 
 	cfg := &platform.Config{
-		Display: *flagDisplay,
-		GPU:     *flagGPU,
+		Display:    *flagDisplay,
+		GPU:        *flagGPU,
+		Resolution: *flagResolution,
 	}
 	fillPlatformConfig(cfg)
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"unsafe"
 
 	"bunghole/internal/capture"
@@ -31,6 +32,15 @@ func fillPlatformConfig(cfg *platform.Config) {
 	cfg.VMShare = *flagVMShare
 	cfg.VMAudioPassthru = *flagVMAudioPassthru
 	cfg.DiskGB = *flagDisk
+
+	if cfg.VM {
+		var w, h int
+		if _, err := fmt.Sscanf(cfg.Resolution, "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 {
+			w, h = 1920, 1080
+		}
+		cfg.VMWidth = w
+		cfg.VMHeight = h
+	}
 }
 
 func newCapturer(display string, fps, gpu int) (types.MediaCapturer, error) {

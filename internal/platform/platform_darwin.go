@@ -22,7 +22,7 @@ func Init(cfg *Config) (func(), error) {
 		if sharedDir == "" {
 			sharedDir, _ = os.UserHomeDir()
 		}
-		mgr, err := vm.NewVMManager(path, sharedDir, 1920, 1080, cfg.VMAudioPassthru)
+		mgr, err := vm.NewVMManager(path, sharedDir, cfg.VMWidth, cfg.VMHeight, cfg.VMAudioPassthru)
 		if err != nil {
 			return nil, fmt.Errorf("VM create failed: %v", err)
 		}

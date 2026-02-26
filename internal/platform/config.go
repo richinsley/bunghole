@@ -10,6 +10,8 @@ type Config struct {
 	Resolution string // Linux: screen resolution for headless X
 	VM              bool   // macOS: run a Virtualization.framework VM
 	VMShare         string // macOS: directory to share with VM via VirtioFS
+	VMWidth         int    // macOS: VM display width in pixels
+	VMHeight        int    // macOS: VM display height in pixels
 	VMAudioPassthru bool   // macOS: pass guest audio through to host speakers
 	DiskGB          int    // macOS: VM disk size in GB (used with setup)
 
