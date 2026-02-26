@@ -291,6 +291,9 @@ int vm_create(const char *bundle_path, const char *shared_dir,
             [window setContentView:vmView];
             [window setLevel:NSNormalWindowLevel];
             [window orderFront:nil];
+            [window setCollectionBehavior:
+                NSWindowCollectionBehaviorStationary |
+                NSWindowCollectionBehaviorIgnoresCycle];
         };
 
         if ([NSThread isMainThread]) {
