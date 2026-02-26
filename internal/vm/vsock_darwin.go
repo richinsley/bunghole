@@ -21,8 +21,8 @@ import (
 )
 
 var (
-	vsockConnCh chan net.Conn
-	vsockMu     sync.Mutex
+	vsockPorts = make(map[uint32]chan net.Conn)
+	vsockMu    sync.Mutex
 )
 
 // StartVsockListener starts listening for vsock connections on the given port.
@@ -31,33 +31,37 @@ func StartVsockListener(vmPtr unsafe.Pointer, port uint32) (<-chan net.Conn, err
 	vsockMu.Lock()
 	defer vsockMu.Unlock()
 
+	if _, exists := vsockPorts[port]; exists {
+		return nil, fmt.Errorf("vsock port %d already in use", port)
+	}
+
 	ch := make(chan net.Conn, 4)
-	vsockConnCh = ch
+	vsockPorts[port] = ch
 
 	ret := C.vm_vsock_listen(vmPtr, C.uint32_t(port))
 	if ret != 0 {
-		vsockConnCh = nil
-		return nil, fmt.Errorf("vm_vsock_listen failed")
+		delete(vsockPorts, port)
+		return nil, fmt.Errorf("vm_vsock_listen failed for port %d", port)
 	}
 	return ch, nil
 }
 
-// StopVsockListener removes the vsock listener.
+// StopVsockListener removes the vsock listener for a specific port.
 func StopVsockListener(vmPtr unsafe.Pointer, port uint32) {
 	vsockMu.Lock()
 	defer vsockMu.Unlock()
 
 	C.vm_vsock_stop(vmPtr, C.uint32_t(port))
-	if vsockConnCh != nil {
-		close(vsockConnCh)
-		vsockConnCh = nil
+	if ch, ok := vsockPorts[port]; ok {
+		close(ch)
+		delete(vsockPorts, port)
 	}
 }
 
 //export vsock_go_accepted
-func vsock_go_accepted(fd C.int) {
+func vsock_go_accepted(fd C.int, port C.uint32_t) {
 	vsockMu.Lock()
-	ch := vsockConnCh
+	ch := vsockPorts[uint32(port)]
 	vsockMu.Unlock()
 
 	if ch == nil {

@@ -40,8 +40,17 @@ func Init(cfg *Config) (func(), error) {
 			log.Printf("vsock audio listener started on port 5000")
 		}
 
+		clipCh, err := vm.StartVsockListener(mgr.VMPtr(), 5002)
+		if err != nil {
+			log.Printf("vsock clipboard listener failed: %v", err)
+		} else {
+			mgr.SetVsockClipCh(clipCh)
+			log.Printf("vsock clipboard listener started on port 5002")
+		}
+
 		log.Printf("VM running (bundle: %s, shared: %s)", path, sharedDir)
 		return func() {
+			vm.StopVsockListener(mgr.VMPtr(), 5002)
 			vm.StopVsockListener(mgr.VMPtr(), 5000)
 			mgr.Stop()
 		}, nil

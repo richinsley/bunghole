@@ -40,6 +40,7 @@ import "C"
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"unsafe"
@@ -48,12 +49,13 @@ import (
 var globalVM *VMManager
 
 type VMManager struct {
-	handle     C.VMHandle
-	bundlePath string
-	view       unsafe.Pointer
-	Width      int
-	Height     int
-	WindowID   uint32
+	handle      C.VMHandle
+	bundlePath  string
+	view        unsafe.Pointer
+	Width       int
+	Height      int
+	WindowID    uint32
+	vsockClipCh <-chan net.Conn
 }
 
 func SetGlobal(vm *VMManager) { globalVM = vm }
@@ -103,6 +105,9 @@ func (vm *VMManager) Stop() {
 }
 
 func (vm *VMManager) View() unsafe.Pointer { return vm.view }
+
+func (vm *VMManager) SetVsockClipCh(ch <-chan net.Conn) { vm.vsockClipCh = ch }
+func (vm *VMManager) VsockClipCh() <-chan net.Conn      { return vm.vsockClipCh }
 
 func BundlePath() string {
 	home, _ := os.UserHomeDir()

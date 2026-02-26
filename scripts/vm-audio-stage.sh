@@ -90,6 +90,19 @@ if [[ "$MODE" == "driver" ]]; then
     cp -f "$REPO_ROOT/driver/BungholeAudio/uninstall.sh" "$STAGE_DIR/uninstall.sh"
     chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/uninstall.sh"
 
+    # Stage clipboard agent alongside driver
+    CLIP_BIN="$REPO_ROOT/build/bunghole-vm-clipboard"
+    if [[ ! -f "$CLIP_BIN" ]]; then
+        echo "Building bunghole-vm-clipboard via CMake ..."
+        (cd "$REPO_ROOT" && cmake --build build --target bunghole-vm-clipboard)
+    fi
+    if [[ -f "$CLIP_BIN" ]]; then
+        cp -f "$CLIP_BIN" "$STAGE_DIR/bunghole-vm-clipboard"
+        chmod 0755 "$STAGE_DIR/bunghole-vm-clipboard"
+    else
+        echo "warning: bunghole-vm-clipboard not found, clipboard sync will not be available" >&2
+    fi
+
     echo "Staged driver bundle to: $STAGE_DIR"
     echo
     echo "Inside the macOS guest, run:"

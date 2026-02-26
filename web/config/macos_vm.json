@@ -3,6 +3,6 @@
     "os": "macos",
     "type": "vm",
     "cursor": false,
-    "clipboard": false
+    "clipboard": true
   }
 }

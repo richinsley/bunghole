@@ -66,8 +66,12 @@ func newInputHandler(displayName string) (types.EventInjector, error) {
 }
 
 func newClipboardHandler(displayName string, sendFn func(string)) (types.ClipboardSync, error) {
-	// Clipboard sync deferred for VM mode (needs vsock guest agent)
 	if displayName == "vm" {
+		if g := vm.GetGlobal(); g != nil {
+			if ch := g.VsockClipCh(); ch != nil {
+				return clipboard.NewVsockClipboardSync(ch, sendFn), nil
+			}
+		}
 		return nil, nil
 	}
 	return clipboard.NewClipboardHandler(displayName, sendFn)

@@ -5,7 +5,7 @@
 #include <dispatch/dispatch.h>
 
 // Go callback declared in vsock_darwin.go
-extern void vsock_go_accepted(int fd);
+extern void vsock_go_accepted(int fd, uint32_t port);
 
 // ---- Vsock Listener Delegate ----
 
@@ -31,7 +31,8 @@ extern void vsock_go_accepted(int fd);
     [self.connections addObject:connection];
 
     int fd = (int)connection.fileDescriptor;
-    vsock_go_accepted(fd);
+    uint32_t port = (uint32_t)connection.destinationPort;
+    vsock_go_accepted(fd, port);
     return YES;
 }
 
@@ -40,7 +41,6 @@ extern void vsock_go_accepted(int fd);
 // ---- Static state ----
 
 static VsockListenerDelegate *g_delegate = nil;
-static VZVirtioSocketListener *g_listener = nil;
 
 // ---- C API ----
 
@@ -60,11 +60,15 @@ int vm_vsock_listen(void *vm_ptr, uint32_t port) {
 
             VZVirtioSocketDevice *vsock = (VZVirtioSocketDevice *)socketDevices.firstObject;
 
-            g_delegate = [[VsockListenerDelegate alloc] init];
-            g_listener = [[VZVirtioSocketListener alloc] init];
-            g_listener.delegate = g_delegate;
+            // Lazy-init shared delegate
+            if (!g_delegate) {
+                g_delegate = [[VsockListenerDelegate alloc] init];
+            }
 
-            [vsock setSocketListener:g_listener forPort:port];
+            VZVirtioSocketListener *listener = [[VZVirtioSocketListener alloc] init];
+            listener.delegate = g_delegate;
+
+            [vsock setSocketListener:listener forPort:port];
             NSLog(@"vm_vsock_listen: listening on port %u", port);
         }
     };
@@ -90,9 +94,6 @@ void vm_vsock_stop(void *vm_ptr, uint32_t port) {
                 VZVirtioSocketDevice *vsock = (VZVirtioSocketDevice *)socketDevices.firstObject;
                 [vsock removeSocketListenerForPort:port];
             }
-
-            g_listener = nil;
-            g_delegate = nil;
         }
     };
 
