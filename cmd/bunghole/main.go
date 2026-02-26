@@ -135,6 +135,7 @@ func runServer(cfg *platform.Config) {
 		Addr:           *flagAddr,
 		Stats:          *flagStats,
 		AudioUDPListen: *flagAudioUDPListen,
+		VsockAudioCh:   cfg.VsockAudioCh,
 
 		OfferTimeout:   *flagOfferTimeout,
 		AllowedOrigins: allowedOrigins,

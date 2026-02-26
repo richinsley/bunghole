@@ -3,21 +3,33 @@ set -euo pipefail
 
 usage() {
     cat <<USAGE
-usage: $(basename "$0") --vm-share <path> [--bin <path>] [--udp-target <host:port>]
+usage: $(basename "$0") --vm-share <path> [--mode driver|agent] [--bin <path>] [--udp-target <host:port>]
 
-Stages VM guest audio agent files into:
-  <vm-share>/.bunghole-vm-audio/
+Stages VM guest audio files into the shared folder.
+
+Modes:
+  --mode driver   (default) Stage CoreAudio HAL driver bundle to
+                  <vm-share>/.bunghole-audio-driver/
+  --mode agent    Stage legacy guest agent binary to
+                  <vm-share>/.bunghole-vm-audio/
+
+If --udp-target is omitted (agent mode), guest agent defaults to vsock.
 USAGE
 }
 
 VM_SHARE=""
 BIN_PATH="./build/bunghole-vm-audio"
 UDP_TARGET=""
+MODE="driver"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vm-share)
             VM_SHARE="${2:-}"
+            shift 2
+            ;;
+        --mode)
+            MODE="${2:-}"
             shift 2
             ;;
         --bin)
@@ -52,6 +64,43 @@ if [[ ! -d "$VM_SHARE" ]]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ "$MODE" != "driver" && "$MODE" != "agent" ]]; then
+    echo "error: --mode must be 'driver' or 'agent'" >&2
+    exit 1
+fi
+
+# ── Driver mode: stage HAL plugin bundle ──
+if [[ "$MODE" == "driver" ]]; then
+    DRIVER_BUNDLE="$REPO_ROOT/build/BungholeAudio.driver"
+    if [[ ! -d "$DRIVER_BUNDLE" ]]; then
+        echo "Building BungholeAudio driver via CMake ..."
+        (cd "$REPO_ROOT" && cmake --build build --target BungholeAudio)
+    fi
+    if [[ ! -d "$DRIVER_BUNDLE" ]]; then
+        echo "error: driver bundle not found: $DRIVER_BUNDLE" >&2
+        exit 1
+    fi
+
+    STAGE_DIR="$VM_SHARE/.bunghole-audio-driver"
+    mkdir -p "$STAGE_DIR"
+    rm -rf "$STAGE_DIR/BungholeAudio.driver"
+    cp -R "$DRIVER_BUNDLE" "$STAGE_DIR/BungholeAudio.driver"
+    cp -f "$REPO_ROOT/driver/BungholeAudio/install.sh" "$STAGE_DIR/install.sh"
+    cp -f "$REPO_ROOT/driver/BungholeAudio/uninstall.sh" "$STAGE_DIR/uninstall.sh"
+    chmod 0755 "$STAGE_DIR/install.sh" "$STAGE_DIR/uninstall.sh"
+
+    echo "Staged driver bundle to: $STAGE_DIR"
+    echo
+    echo "Inside the macOS guest, run:"
+    echo "  cd '/Volumes/My Shared Files/.bunghole-audio-driver'"
+    echo "  sudo ./install.sh"
+    echo
+    echo "Then set 'Bunghole Output' as default in System Settings → Sound → Output."
+    exit 0
+fi
+
+# ── Agent mode (legacy): stage guest agent binary ──
 BIN_ABS="$BIN_PATH"
 if [[ "$BIN_ABS" != /* ]]; then
     BIN_ABS="$REPO_ROOT/${BIN_PATH#./}"
@@ -106,9 +155,11 @@ echo "  cd '/Volumes/My Shared Files/.bunghole-vm-audio'"
 echo "  ./install.sh"
 if [[ -n "$UDP_TARGET" ]]; then
     echo "(preconfigured UDP target: $UDP_TARGET)"
+else
+    echo "(default: vsock auto-detected, no UDP config needed)"
 fi
 echo
 echo "Optional install-time overrides in guest:"
-echo "  BUNGHOLE_VM_AUDIO_UDP=<host:port>"
+echo "  BUNGHOLE_VM_AUDIO_UDP=<host:port>   (force UDP transport)"
 echo "  BUNGHOLE_VM_AUDIO_STATS_INTERVAL=<duration>"
 echo "  BUNGHOLE_VM_AUDIO_SKIP_PROBE=1"

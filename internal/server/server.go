@@ -44,6 +44,7 @@ type Config struct {
 	Addr           string
 	Stats          bool
 	AudioUDPListen string
+	VsockAudioCh   <-chan net.Conn // macOS VM: vsock audio connections from guest
 
 	OfferTimeout   time.Duration
 	AllowedOrigins []string
@@ -784,7 +785,14 @@ func (s *Server) runPipeline(cap types.MediaCapturer, enc types.VideoEncoder, vi
 		if err == nil {
 			log.Printf("audio: source=guest-udp listen=%s", s.cfg.AudioUDPListen)
 		}
+	} else if s.cfg.VsockAudioCh != nil {
+		// Vsock first when available (VM mode) — the guest HAL driver
+		// sends Opus directly over vsock, no host-side SCK needed.
+		ac = audio.NewVsockAudioCapture(s.cfg.VsockAudioCh)
+		log.Printf("audio: source=guest-vsock")
+		err = nil
 	} else {
+		// Host desktop mode — capture via ScreenCaptureKit.
 		ac, err = audio.NewAudioCapture()
 	}
 	if err != nil {

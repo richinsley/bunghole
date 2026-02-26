@@ -22,7 +22,7 @@ typedef struct {
 void vm_nsapp_run(void);
 void vm_nsapp_stop(void);
 int  vm_create(const char *bundle_path, const char *shared_dir,
-               int width, int height, VMHandle *out);
+               int width, int height, int audio_passthru, VMHandle *out);
 int  vm_start(VMHandle *h);
 void vm_stop(VMHandle *h);
 void vm_destroy(VMHandle *h);
@@ -59,7 +59,7 @@ type VMManager struct {
 func SetGlobal(vm *VMManager) { globalVM = vm }
 func GetGlobal() *VMManager   { return globalVM }
 
-func NewVMManager(bundlePath, sharedDir string, w, h int) (*VMManager, error) {
+func NewVMManager(bundlePath, sharedDir string, w, h int, audioPassthru bool) (*VMManager, error) {
 	cBundle := C.CString(bundlePath)
 	defer C.free(unsafe.Pointer(cBundle))
 
@@ -69,8 +69,13 @@ func NewVMManager(bundlePath, sharedDir string, w, h int) (*VMManager, error) {
 		defer C.free(unsafe.Pointer(cShare))
 	}
 
+	var cAudio C.int
+	if audioPassthru {
+		cAudio = 1
+	}
+
 	var handle C.VMHandle
-	if ret := C.vm_create(cBundle, cShare, C.int(w), C.int(h), &handle); ret != 0 {
+	if ret := C.vm_create(cBundle, cShare, C.int(w), C.int(h), cAudio, &handle); ret != 0 {
 		return nil, fmt.Errorf("vm_create failed")
 	}
 

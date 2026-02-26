@@ -20,13 +20,6 @@ if [[ -z "$UDP_DEST" && -f "$SCRIPT_DIR/udp_target.txt" ]]; then
     UDP_DEST="$(tr -d '\r\n' < "$SCRIPT_DIR/udp_target.txt")"
 fi
 
-if [[ -z "$UDP_DEST" ]]; then
-    GW="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2; exit}')"
-    if [[ -n "$GW" ]]; then
-        UDP_DEST="${GW}:18080"
-    fi
-fi
-
 if [[ ! -f "$BIN_SRC" ]]; then
     echo "error: missing binary: $BIN_SRC" >&2
     exit 1
@@ -43,11 +36,6 @@ if [[ -f "$SCRIPT_DIR/libopus.0.dylib" ]]; then
     install -m 0644 "$SCRIPT_DIR/libopus.0.dylib" "$APP_DIR/libopus.0.dylib"
 fi
 
-if [[ -z "$UDP_DEST" ]]; then
-    echo "error: could not determine UDP target. Set BUNGHOLE_VM_AUDIO_UDP=host:port when running install.sh" >&2
-    exit 1
-fi
-
 if [[ "$SKIP_PROBE" != "1" ]]; then
     echo "Checking Screen Recording permission..."
     if ! "$BIN_DST" --probe-permission --stats=false >>"$LOG_OUT" 2>>"$LOG_ERR"; then
@@ -58,12 +46,19 @@ if [[ "$SKIP_PROBE" != "1" ]]; then
     fi
 fi
 
-UDP_ARG_LINE="        <string>--udp=$UDP_DEST</string>"
+# Determine transport arguments
+TRANSPORT_ARGS=""
+if [[ -n "$UDP_DEST" ]]; then
+    TRANSPORT_ARGS="        <string>--transport=udp</string>
+        <string>--udp=$UDP_DEST</string>"
+else
+    TRANSPORT_ARGS="        <string>--transport=auto</string>"
+fi
 
 sed \
     -e "s|__PROGRAM_PATH__|$BIN_DST|g" \
     -e "s|__STATS_INTERVAL__|$STATS_INTERVAL|g" \
-    -e "s|__UDP_ARG_LINE__|$UDP_ARG_LINE|g" \
+    -e "s|__TRANSPORT_ARGS__|$TRANSPORT_ARGS|g" \
     -e "s|__STDOUT_PATH__|$LOG_OUT|g" \
     -e "s|__STDERR_PATH__|$LOG_ERR|g" \
     "$TEMPLATE" > "$PLIST_PATH"
@@ -77,7 +72,11 @@ launchctl kickstart -k "$DOMAIN/$LABEL"
 
 echo "Installed: $BIN_DST"
 echo "LaunchAgent: $PLIST_PATH"
-echo "UDP target: $UDP_DEST"
+if [[ -n "$UDP_DEST" ]]; then
+    echo "Transport: udp ($UDP_DEST)"
+else
+    echo "Transport: auto (vsock preferred, UDP fallback)"
+fi
 echo "stdout log: $LOG_OUT"
 echo "stderr log: $LOG_ERR"
 echo "status: launchctl print $DOMAIN/$LABEL"

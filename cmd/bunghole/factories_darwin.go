@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	flagVM      = flag.Bool("vm", false, "Run macOS VM and stream its display")
-	flagVMShare = flag.String("vm-share", "", "Directory to share with VM via VirtioFS")
-	flagDisk    = flag.Int("disk", 64, "VM disk size in GB (used with setup)")
+	flagVM              = flag.Bool("vm", false, "Run macOS VM and stream its display")
+	flagVMShare         = flag.String("vm-share", "", "Directory to share with VM via VirtioFS")
+	flagVMAudioPassthru = flag.Bool("vm-audio-passthru", false, "Pass VM guest audio through to host speakers")
+	flagDisk            = flag.Int("disk", 64, "VM disk size in GB (used with setup)")
 )
 
 func registerPlatformFlags() {
@@ -28,6 +29,7 @@ func registerPlatformFlags() {
 func fillPlatformConfig(cfg *platform.Config) {
 	cfg.VM = *flagVM
 	cfg.VMShare = *flagVMShare
+	cfg.VMAudioPassthru = *flagVMAudioPassthru
 	cfg.DiskGB = *flagDisk
 }
 

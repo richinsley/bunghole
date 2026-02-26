@@ -144,7 +144,7 @@ void vm_nsapp_stop(void) {
 // ---- VM Create ----
 
 int vm_create(const char *bundle_path, const char *shared_dir,
-              int width, int height, VMHandle *out) {
+              int width, int height, int audio_passthru, VMHandle *out) {
     @autoreleasepool {
         memset(out, 0, sizeof(VMHandle));
 
@@ -229,6 +229,10 @@ int vm_create(const char *bundle_path, const char *shared_dir,
         VZVirtioSoundDeviceConfiguration *sound = [[VZVirtioSoundDeviceConfiguration alloc] init];
         VZVirtioSoundDeviceOutputStreamConfiguration *audioOut =
             [[VZVirtioSoundDeviceOutputStreamConfiguration alloc] init];
+        if (audio_passthru) {
+            audioOut.sink = [[VZHostAudioOutputStreamSink alloc] init];
+            NSLog(@"vm_create: audio passthrough enabled (guest audio plays on host)");
+        }
         sound.streams = @[audioOut];
 
         VZVirtualMachineConfiguration *config = [[VZVirtualMachineConfiguration alloc] init];
@@ -242,6 +246,9 @@ int vm_create(const char *bundle_path, const char *shared_dir,
         config.keyboards = @[keyboard];
         config.pointingDevices = @[pointing];
         config.audioDevices = @[sound];
+
+        VZVirtioSocketDeviceConfiguration *vsockDev = [[VZVirtioSocketDeviceConfiguration alloc] init];
+        config.socketDevices = @[vsockDev];
 
         if (shared_dir) {
             NSString *sharePath = [NSString stringWithUTF8String:shared_dir];

@@ -22,7 +22,7 @@ func Init(cfg *Config) (func(), error) {
 		if sharedDir == "" {
 			sharedDir, _ = os.UserHomeDir()
 		}
-		mgr, err := vm.NewVMManager(path, sharedDir, 1920, 1080)
+		mgr, err := vm.NewVMManager(path, sharedDir, 1920, 1080, cfg.VMAudioPassthru)
 		if err != nil {
 			return nil, fmt.Errorf("VM create failed: %v", err)
 		}
@@ -31,8 +31,20 @@ func Init(cfg *Config) (func(), error) {
 		}
 		vm.SetGlobal(mgr)
 		cfg.Display = "vm"
+
+		connCh, err := vm.StartVsockListener(mgr.VMPtr(), 5000)
+		if err != nil {
+			log.Printf("vsock audio listener failed: %v", err)
+		} else {
+			cfg.VsockAudioCh = connCh
+			log.Printf("vsock audio listener started on port 5000")
+		}
+
 		log.Printf("VM running (bundle: %s, shared: %s)", path, sharedDir)
-		return func() { mgr.Stop() }, nil
+		return func() {
+			vm.StopVsockListener(mgr.VMPtr(), 5000)
+			mgr.Stop()
+		}, nil
 	}
 
 	if cfg.Display == "" {

@@ -10,7 +10,7 @@
         <string>__PROGRAM_PATH__</string>
         <string>--stats=true</string>
         <string>--stats-interval=__STATS_INTERVAL__</string>
-__UDP_ARG_LINE__
+__TRANSPORT_ARGS__
     </array>
 
     <key>RunAtLoad</key>

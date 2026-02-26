@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>BungholeAudio</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.bunghole.audio</string>
+    <key>CFBundleName</key>
+    <string>BungholeAudio</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFPlugInFactories</key>
+    <dict>
+        <key>94230DF1-F998-49F1-9B7B-A23B1974AA18</key>
+        <string>BungholeAudio_Create</string>
+    </dict>
+    <key>CFPlugInTypes</key>
+    <dict>
+        <key>443ABEB8-E7B0-48D3-B2A0-381E2D0BB556</key>
+        <array>
+            <string>94230DF1-F998-49F1-9B7B-A23B1974AA18</string>
+        </array>
+        <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+        <array>
+            <string>94230DF1-F998-49F1-9B7B-A23B1974AA18</string>
+        </array>
+    </dict>
+</dict>
+</plist>
