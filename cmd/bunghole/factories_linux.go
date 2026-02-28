@@ -16,6 +16,7 @@ import (
 
 var (
 	flagStartX            = flag.Bool("start-x", false, "Start a new Xorg server with nvidia driver")
+	flagUser              = flag.String("user", "", "Run desktop session as this user (with --start-x)")
 	flagExperimentalNvFBC = flag.Bool("experimental-nvfbc", false, "Enable experimental NvFBC capture path (Linux/NVIDIA only)")
 )
 
@@ -25,6 +26,7 @@ func registerPlatformFlags() {
 
 func fillPlatformConfig(cfg *platform.Config) {
 	cfg.StartX = *flagStartX
+	cfg.User = *flagUser
 	capture.SetExperimentalNvFBC(*flagExperimentalNvFBC)
 }
 

@@ -27,7 +27,7 @@ func Init(cfg *Config) (func(), error) {
 			os.Setenv("DISPLAY", cfg.Display)
 			os.Setenv("XAUTHORITY", xs.Xauthority)
 
-			if err := xs.StartDesktopSession(cfg.Resolution); err != nil {
+			if err := xs.StartDesktopSession(cfg.Resolution, cfg.User); err != nil {
 				log.Printf("warning: failed to start desktop session: %v", err)
 				log.Printf("X server is running on %s but no desktop — you may want to start one manually", cfg.Display)
 			}

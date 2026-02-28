@@ -18,6 +18,8 @@ apt install libavcodec-dev libavutil-dev libswscale-dev \
 
 For headless mode: `xserver-xorg gnome-shell pipewire wireplumber pipewire-pulse xrandr`
 
+**Headless mode** (`--start-x`) requires root (`sudo`) to acquire DRM master for the GPU. Use `--user` to drop privileges for the desktop session (GNOME Shell, PipeWire) while keeping Xorg as root. bunghole automatically detects the nvidia module path (nvidia 580+ moved it) and cleans up orphaned Xorg processes from previous runs.
+
 ## Build
 
 ### cmake (recommended)
@@ -54,7 +56,8 @@ bunghole --token SECRET [flags]
 | `--gop` | `0` | Keyframe interval in frames (0 = 2x FPS) |
 | `--gpu` | `0` | GPU index for encoding and Xorg |
 | `--display` | auto | X11 display to capture |
-| `--start-x` | `false` | Start a headless Xorg + GNOME Shell |
+| `--start-x` | `false` | Start a headless Xorg + GNOME Shell (requires `sudo`) |
+| `--user` | | Run desktop session as this user (with `--start-x`); Xorg stays root |
 | `--resolution` | `1920x1080` | Screen resolution (with `--start-x`) |
 | `--stats` | `false` | Log pipeline stats every 5 seconds |
 | `--experimental-nvfbc` | `false` | Enable experimental NvFBC capture path |
@@ -71,12 +74,17 @@ bunghole --token mysecret --display :0
 
 Start a headless desktop and stream it:
 ```
-bunghole --token mysecret --start-x --resolution 2560x1440 --codec h265 --bitrate 8000
+sudo bunghole --token mysecret --start-x --resolution 2560x1440 --codec h265 --bitrate 8000
+```
+
+Start headless but run the desktop session as a non-root user:
+```
+sudo bunghole --token mysecret --start-x --user rich --gpu 1
 ```
 
 Use a specific GPU (e.g., second GPU for NVENC + NvFBC):
 ```
-bunghole --token mysecret --start-x --gpu 1 --experimental-nvfbc
+sudo bunghole --token mysecret --start-x --gpu 1 --experimental-nvfbc
 ```
 
 Enable HTTPS with a self-signed certificate (required for clipboard sync over non-localhost):
@@ -221,12 +229,14 @@ Bidirectional clipboard sync uses the X11 selection protocol:
 
 ### Headless X Server
 
-When `--start-x` is used, bunghole manages its own display stack:
+When `--start-x` is used (requires `sudo`), bunghole manages its own display stack:
 
-1. **Xorg**: Finds an available display number, generates an `xorg.conf` targeting the specified NVIDIA GPU (queries BusID via `nvidia-smi`), and launches Xorg
+1. **Xorg**: Runs as root (needs DRM master). Finds an available display number, generates an `xorg.conf` targeting the specified NVIDIA GPU (queries BusID via `nvidia-smi`), and launches Xorg
 2. **PipeWire**: Starts PipeWire + WirePlumber + pipewire-pulse in an isolated `XDG_RUNTIME_DIR`
 3. **GNOME Shell**: Launches via `dbus-run-session` and waits for the window manager to be ready (`_NET_SUPPORTING_WM_CHECK`)
 4. **Resolution**: Configures the display resolution via xrandr, creating custom modes with `cvt` if needed
+
+When `--user` is specified, steps 2-3 run as the target user via `syscall.Credential` (the process drops privileges). The Xauthority file is made readable and the runtime directory is owned by the target user so PipeWire and GNOME Shell can operate normally.
 
 Cleanup kills all spawned processes and removes temporary files (X lock files, sockets, config directory).
 

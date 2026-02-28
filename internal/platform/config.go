@@ -8,6 +8,7 @@ type Config struct {
 	GPU        int
 	StartX     bool   // Linux: start a headless Xorg server
 	Resolution string // Linux: screen resolution for headless X
+	User       string // Linux: run desktop session as this user (with --start-x)
 	VM              bool   // macOS: run a Virtualization.framework VM
 	VMShare         string // macOS: directory to share with VM via VirtioFS
 	VMWidth         int    // macOS: VM display width in pixels

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +25,9 @@ type XServer struct {
 }
 
 func StartXServer(resolution string, gpu int) (*XServer, error) {
+	checkHeadlessPrereqs()
+	cleanStaleXorgProcesses()
+
 	// Find an available display number
 	displayNum := findAvailableDisplay()
 	display := fmt.Sprintf(":%d", displayNum)
@@ -63,6 +67,13 @@ func StartXServer(resolution string, gpu int) (*XServer, error) {
 		"-verbose", "3",
 	}
 
+	// Add nvidia module path if the driver is installed outside the
+	// default Xorg module directory (common with nvidia-580+ packages).
+	if nvidiaModPath := findNvidiaModulePath(); nvidiaModPath != "" {
+		xorgArgs = append(xorgArgs, "-modulepath",
+			nvidiaModPath+",/usr/lib/xorg/modules")
+	}
+
 	log.Printf("starting Xorg on %s (vt%d, gpu %d)", display, vtNum, gpu)
 	xorgCmd := exec.Command("Xorg", xorgArgs...)
 
@@ -73,7 +84,10 @@ func StartXServer(resolution string, gpu int) (*XServer, error) {
 	}
 	xorgCmd.Stdout = xorgLog
 	xorgCmd.Stderr = xorgLog
-	xorgCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	xorgCmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:    true,
+		Pdeathsig: syscall.SIGTERM,
+	}
 
 	if err := xorgCmd.Start(); err != nil {
 		xorgLog.Close()
@@ -191,13 +205,45 @@ func (xs *XServer) runCmd(env []string, name string, args ...string) (string, er
 	return string(out), err
 }
 
-func (xs *XServer) StartDesktopSession(resolution string) error {
+func (xs *XServer) StartDesktopSession(resolution, runAsUser string) error {
 	log.Printf("starting desktop session on %s", xs.Display)
 
 	// Patch gnome-shell's loginManager.js to handle null Display property.
 	overlayEnv := patchGnomeShellJS(xs.tmpDir)
 
-	sessionEnv := append(os.Environ(),
+	// Build session environment, optionally overriding user identity.
+	var sessionEnv []string
+	var cred *syscall.Credential
+
+	if runAsUser != "" {
+		u, err := user.Lookup(runAsUser)
+		if err != nil {
+			return fmt.Errorf("lookup user %q: %w", runAsUser, err)
+		}
+		uid, _ := strconv.ParseUint(u.Uid, 10, 32)
+		gid, _ := strconv.ParseUint(u.Gid, 10, 32)
+		cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
+		log.Printf("desktop session will run as %s (uid=%d gid=%d)", runAsUser, uid, gid)
+
+		// Filter identity-related vars from inherited env, then set target user's values.
+		for _, e := range os.Environ() {
+			k := e[:strings.IndexByte(e, '=')]
+			switch k {
+			case "HOME", "USER", "LOGNAME", "XDG_RUNTIME_DIR":
+				continue
+			}
+			sessionEnv = append(sessionEnv, e)
+		}
+		sessionEnv = append(sessionEnv,
+			"HOME="+u.HomeDir,
+			"USER="+u.Username,
+			"LOGNAME="+u.Username,
+		)
+	} else {
+		sessionEnv = append([]string(nil), os.Environ()...)
+	}
+
+	sessionEnv = append(sessionEnv,
 		"DISPLAY="+xs.Display,
 		"XAUTHORITY="+xs.Xauthority,
 		"XDG_SESSION_TYPE=x11",
@@ -213,6 +259,14 @@ func (xs *XServer) StartDesktopSession(resolution string) error {
 	pwRuntimeDir := filepath.Join(xs.tmpDir, "runtime")
 	os.MkdirAll(pwRuntimeDir, 0700)
 	xs.PulseServer = fmt.Sprintf("unix:%s/pulse/native", pwRuntimeDir)
+
+	// If dropping privileges, make the tmpDir traversable and let the target
+	// user own the runtime dir and read Xauthority.
+	if cred != nil {
+		os.Chmod(xs.tmpDir, 0755)
+		os.Chown(pwRuntimeDir, int(cred.Uid), int(cred.Gid))
+		os.Chmod(xs.Xauthority, 0644)
+	}
 
 	launcherPath := filepath.Join(xs.tmpDir, "launch-desktop.sh")
 	launcher := fmt.Sprintf(`#!/bin/bash
@@ -246,7 +300,13 @@ exec gnome-shell --x11
 	}
 	cmd.Stdout = sessionLog
 	cmd.Stderr = sessionLog
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid:    true,
+		Pdeathsig: syscall.SIGTERM,
+	}
+	if cred != nil {
+		cmd.SysProcAttr.Credential = cred
+	}
 
 	if err := cmd.Start(); err != nil {
 		sessionLog.Close()
@@ -314,6 +374,10 @@ func (xs *XServer) Stop() {
 func (xs *XServer) waitReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		// Check if Xorg exited early
+		if xs.xorgCmd.ProcessState != nil {
+			break
+		}
 		socketPath := fmt.Sprintf("/tmp/.X11-unix/X%s", strings.TrimPrefix(xs.Display, ":"))
 		if _, err := os.Stat(socketPath); err == nil {
 			cmd := exec.Command("xdpyinfo")
@@ -326,6 +390,11 @@ func (xs *XServer) waitReady(timeout time.Duration) error {
 			}
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+	// Dump Xorg log so the failure reason is visible
+	logPath := filepath.Join(xs.tmpDir, "xorg.log")
+	if data, err := os.ReadFile(logPath); err == nil && len(data) > 0 {
+		log.Printf("--- Xorg log ---\n%s--- end Xorg log ---", data)
 	}
 	return fmt.Errorf("timeout waiting for X server on %s", xs.Display)
 }
@@ -489,3 +558,86 @@ func nvidiaToXorgBusID(nvBusID string) string {
 
 	return "PCI:" + nvBusID
 }
+
+// cleanStaleXorgProcesses finds and kills Xorg processes left behind by
+// previous bunghole runs that weren't cleaned up (e.g. bunghole was killed
+// with SIGKILL, or the parent process crashed). Orphaned Xorg processes
+// hold DRM master and prevent new instances from starting.
+func cleanStaleXorgProcesses() {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	myPID := os.Getpid()
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == myPID {
+			continue
+		}
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			continue
+		}
+		args := string(cmdline)
+		if !strings.Contains(args, "Xorg") || !strings.Contains(args, "bunghole-x-") {
+			continue
+		}
+		log.Printf("killing stale Xorg process %d", pid)
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		proc.Signal(syscall.SIGTERM)
+		// Wait briefly for it to exit
+		for i := 0; i < 10; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if err := proc.Signal(syscall.Signal(0)); err != nil {
+				break
+			}
+		}
+	}
+	// Clean up any stale lock files and sockets from bunghole temp dirs
+	for i := 1; i <= 99; i++ {
+		lock := fmt.Sprintf("/tmp/.X%d-lock", i)
+		data, err := os.ReadFile(lock)
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			continue
+		}
+		// Check if the PID is still alive
+		if err := syscall.Kill(pid, 0); err != nil {
+			// Process is gone — clean up stale files
+			log.Printf("removing stale X lock file for display :%d (pid %d)", i, pid)
+			os.Remove(lock)
+			os.Remove(fmt.Sprintf("/tmp/.X11-unix/X%d", i))
+		}
+	}
+}
+
+// checkHeadlessPrereqs checks system configuration required for starting
+// Xorg from a non-console session (e.g. SSH).
+func checkHeadlessPrereqs() {
+	if os.Getuid() != 0 {
+		log.Printf("warning: --start-x requires root — run with sudo")
+	}
+}
+
+// findNvidiaModulePath returns the directory containing nvidia_drv.so
+// if it lives outside the default Xorg module path (e.g. nvidia-580+
+// installs to /usr/lib/x86_64-linux-gnu/nvidia/xorg/).
+func findNvidiaModulePath() string {
+	// Check default path first — if it's there, no override needed
+	if _, err := os.Stat("/usr/lib/xorg/modules/drivers/nvidia_drv.so"); err == nil {
+		return ""
+	}
+	// Known alternate location used by newer nvidia packages
+	alt := "/usr/lib/x86_64-linux-gnu/nvidia/xorg"
+	if _, err := os.Stat(filepath.Join(alt, "nvidia_drv.so")); err == nil {
+		return alt
+	}
+	return ""
+}
+
