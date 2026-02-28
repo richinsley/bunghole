@@ -151,6 +151,7 @@ body {
   </div>
 </div>
 
+<script src="/bridge.js"></script>
 <script>
 'use strict';
 
@@ -180,6 +181,54 @@ loginForm.addEventListener('submit', (e) => {
   errorMsg.textContent = '';
   connect();
 });
+
+// --- Portal Bridge Integration ---
+const portalEmbedded = BungholeBridge.init();
+
+if (portalEmbedded) {
+  // Hide login UI — portal handles auth
+  loginEl.style.display = 'none';
+
+  BungholeBridge.on('init', (data) => {
+    // Use portal-provided token to auto-connect
+    if (data.auth && data.auth.token) {
+      token = data.auth.token;
+    }
+    connect();
+  });
+
+  BungholeBridge.on('focus', () => {
+    // Activate input focus when portal tab is selected
+    if (videoEl && pc && pc.connectionState === 'connected') {
+      inputFocused = true;
+      videoEl.classList.add('active');
+      if (showCursorDot()) {
+        document.getElementById('cursor-dot').style.display = 'block';
+      }
+    }
+  });
+
+  BungholeBridge.on('blur', () => {
+    // Release input when portal tab loses focus
+    if (inputFocused) {
+      releasePressedKeys();
+      inputFocused = false;
+      if (videoEl) videoEl.classList.remove('active');
+      const cd = document.getElementById('cursor-dot');
+      if (cd) cd.style.display = 'none';
+    }
+  });
+
+  BungholeBridge.on('terminate', (data) => {
+    disconnect();
+  });
+
+  BungholeBridge.on('auth:update', (data) => {
+    if (data && data.token) {
+      token = data.token;
+    }
+  });
+}
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => {
   if (document.fullscreenElement) {
@@ -249,6 +298,7 @@ async function connect() {
       case 'connected':
         setStatus('connected', 'connected');
         loginEl.style.display = 'none';
+        if (portalEmbedded) BungholeBridge.serviceReady('1.0.0');
         viewportEl = document.getElementById('viewport');
         viewportEl.style.display = 'block';
         setupInputHandlers();
@@ -257,6 +307,10 @@ async function connect() {
       case 'disconnected':
       case 'failed':
         setStatus('error', pc.connectionState);
+        if (portalEmbedded) {
+          BungholeBridge.serviceError('WEBRTC_' + pc.connectionState.toUpperCase(),
+            'WebRTC connection ' + pc.connectionState, pc.connectionState === 'failed');
+        }
         break;
       case 'closed':
         setStatus('', 'disconnected');
@@ -315,6 +369,9 @@ async function connect() {
   } catch (err) {
     errorMsg.textContent = err.message;
     setStatus('error', 'failed');
+    if (portalEmbedded) {
+      BungholeBridge.serviceError('WHEP_FAILED', err.message, true);
+    }
     if (pc) pc.close();
   }
 }
