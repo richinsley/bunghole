@@ -131,10 +131,10 @@ body {
 <body>
 
 <div id="login">
-  <img src="/bunghole.png" alt="bunghole" style="width: 120px; height: auto;">
+  <img src="bunghole.png" alt="bunghole" style="width: 120px; height: auto;">
   <h1>bunghole</h1>
   <form id="login-form">
-    <input type="password" id="token-input" placeholder="access token" autofocus>
+    <input type="password" id="token-input" placeholder="access token">
     <button type="submit">connect</button>
   </form>
   <div id="error-msg"></div>
@@ -151,7 +151,7 @@ body {
   </div>
 </div>
 
-<script src="/bridge.js"></script>
+<script src="bridge.js"></script>
 <script>
 'use strict';
 
@@ -162,6 +162,7 @@ let inputDC = null;
 let clipboardDC = null;
 let inputFocused = false;
 let inputHandlersBound = false;
+let portalEmbedded = false;
 let videoEl, viewportEl, cursorDot;
 let config = null;
 let pressedKeys = new Map(); // code -> key
@@ -183,7 +184,7 @@ loginForm.addEventListener('submit', (e) => {
 });
 
 // --- Portal Bridge Integration ---
-const portalEmbedded = BungholeBridge.init();
+portalEmbedded = BungholeBridge.init();
 
 if (portalEmbedded) {
   // Hide login UI — portal handles auth
@@ -228,6 +229,9 @@ if (portalEmbedded) {
       token = data.token;
     }
   });
+} else {
+  // Standalone mode — autofocus the login input
+  tokenInput.focus();
 }
 
 document.getElementById('fullscreen-btn').addEventListener('click', () => {
